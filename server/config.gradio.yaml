@@ -1,7 +1,5 @@
-openai:
-  key: gradio # "gradio" (set when request) or your_personal_key
 huggingface:
-  token: # required: huggingface token @ https://huggingface.co/settings/tokens
+  token: REPLACE_WITH_YOUR_HUGGINGFACE_TOKEN_HERE # required: huggingface token @ https://huggingface.co/settings/tokens
 dev: false
 debug: false
 log_file: logs/debug.log
