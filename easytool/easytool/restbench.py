@@ -4,6 +4,7 @@ import json
 import logging
 import sys
 import argparse
+import ast
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import (
     ChatPromptTemplate,
@@ -70,7 +71,7 @@ def task_decompose(question, Tool_dic, model_name):
     while True:
         try:
             result = chain.run(question=question, Tool_dic=Tool_dic)
-            result = eval(result.split('\n\n')[0])
+            result = ast.literal_eval(result.split('\n\n')[0])
             break
         except Exception as e:
             print(f"task decompose fails: {e}")
