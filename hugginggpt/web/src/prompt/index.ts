@@ -76,7 +76,7 @@ const defaultChatGPTMessage:ChatMessage[] = [
 const defaultHuggingGPTMessage:ChatMessage[] = [
   {
     role: "assistant",
-    content: "Hi there, I am HuggingGPT empowered by Huggingface family! Yes, I can provide thousands of models for dozens of tasks. For more fun and creativity, I have invited Diffusers family to join our team. Feel free to experience it!",
+    content: "Hello, I am Jarvis. I can assist with natural language requests, analysis, diagnostics, automation guidance, and multi-step coordination using available AI tools, focused on your current request.",
     type: "text",
     first: true
   }

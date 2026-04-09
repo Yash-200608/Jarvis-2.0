@@ -75,7 +75,9 @@ def add_text(messages, message):
 def bot(messages):
     if len(OPENAI_KEY) == 0 or not OPENAI_KEY.startswith("sk-"):
         return messages
-    message = chat_huggingface(all_messages, OPENAI_KEY, "openai", "https://api.openai.com/v1/completions")["message"]
+    # Stateless mode: avoid using prior turns as references.
+    current_turn = [all_messages[-1]] if all_messages else []
+    message = chat_huggingface(current_turn, OPENAI_KEY, "openai", "https://api.openai.com/v1/completions")["message"]
     image_urls, audio_urls, video_urls = extract_medias(message)
     add_message(message, "assistant")
     messages[-1][1] = message

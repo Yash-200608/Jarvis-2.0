@@ -14,7 +14,7 @@ let isConfig = ref<boolean>(true);
 let title = ref<string>();
 let mode = ref<string>("default");
 
-title.value = isChatgpt.value? "ChatGPT": "HuggingGPT";
+title.value = isChatgpt.value? "ChatGPT": "Jarvis";
 
 isConfig.value = (isChatgpt.value)? true : false
 
@@ -22,7 +22,7 @@ const chatListDom = ref<HTMLDivElement>();
 // const pdf = ref<HTMLDivElement>();
 let messageContent = ref("");
 
-const roleAliasChatHuggingGPT = { user: "Human", assistant: "HuggingGPT", system: "System" };
+const roleAliasChatHuggingGPT = { user: "Human", assistant: "Jarvis", system: "System" };
 const roleAliasChatGPT = { user: "Human", assistant: "ChatGPT", system: "System" };
 const roleAlias = ref(isChatgpt.value? roleAliasChatGPT: roleAliasChatHuggingGPT);
 const messageList = ref<ChatMessage[]>(isChatgpt.value? promptCollection["chatgpt"][mode.value]: promptCollection["hugginggpt"][mode.value]);
@@ -43,12 +43,8 @@ async function sendChatMessage() {
   )
 
   clearMessageContent();
-  var clean_messages: CleanChatMessage[] = []
-  for (let message of messageList.value) {
-    if (message.first && message.role != "system") {
-      clean_messages.push({role: message.role, content: message.content})
-    }
-  }
+  // Stateless mode: send only the latest user instruction.
+  var clean_messages: CleanChatMessage[] = [{ role: "user", content: input }]
   messageList.value.push(
     { role: "assistant", content: "", type: "text", first: true},
   )
@@ -241,7 +237,7 @@ const switchChatGPT = () => {
     }
   } else {
     isConfig.value = false;
-    title.value = "HuggingGPT"
+    title.value = "Jarvis"
     roleAlias.value = roleAliasChatHuggingGPT
   }
 };

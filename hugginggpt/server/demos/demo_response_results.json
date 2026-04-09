@@ -5,6 +5,6 @@
     },
     {
         "role": "assistant",
-        "content": "Before give you a response, I want to introduce my workflow for your request, which is shown in the following JSON data: {{processes}}. Do you have any demands regarding my response?"
+        "content": "Understood. I will answer as Jarvis using only the current request results: {{processes}}. I will keep the response concise and practical."
     }
 ]
