@@ -25,6 +25,8 @@ from flask_cors import CORS, cross_origin
 from get_token_ids import get_token_ids_for_task_parsing, get_token_ids_for_choose_model, count_tokens, get_max_context_length
 from huggingface_hub.inference_api import InferenceApi
 from huggingface_hub.inference_api import ALL_TASKS
+from device_integration import EndpointDeviceAdapter, DeviceOrchestrator
+from claude_adapter import send_request_claude
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", type=str, default="configs/config.default.yaml")
@@ -80,9 +82,11 @@ else:
     api_name = "chat/completions"
 
 API_TYPE = None
-# priority: local > azure > openai
+# priority: local > claude > azure > openai
 if "dev" in config and config["dev"]:
     API_TYPE = "local"
+elif "anthropic" in config:
+    API_TYPE = "claude"
 elif "azure" in config:
     API_TYPE = "azure"
 elif "openai" in config:
@@ -97,6 +101,20 @@ API_KEY = None
 API_ENDPOINT = None
 if API_TYPE == "local":
     API_ENDPOINT = f"{config['local']['endpoint']}/v1/{api_name}"
+elif API_TYPE == "claude":
+    # Claude uses its own HTTP endpoint; we don't need API_ENDPOINT here.
+    # We read the key from config or env.
+    cfg_key = (config.get("anthropic") or {}).get("api_key", "")
+    if cfg_key and cfg_key.startswith("sk-ant-"):
+        API_KEY = cfg_key
+    elif "ANTHROPIC_API_KEY" in os.environ:
+        API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    else:
+        raise ValueError(
+            f"Anthropic API key not found. Set anthropic.api_key in {args.config} "
+            "or export ANTHROPIC_API_KEY."
+        )
+    API_ENDPOINT = "https://api.anthropic.com/v1/messages"   # informational
 elif API_TYPE == "azure":
     API_ENDPOINT = f"{config['azure']['base_url']}/openai/deployments/{config['azure']['deployment_name']}/{api_name}?api-version={config['azure']['api_version']}"
     API_KEY = config["azure"]["api_key"]
@@ -116,6 +134,25 @@ if config["proxy"]:
     }
 
 inference_mode = config["inference_mode"]
+
+INTEGRATIONS = config.get("integrations", {})
+PHONE_CFG = INTEGRATIONS.get("phone", {})
+COMPUTER_CFG = INTEGRATIONS.get("computer", {})
+
+adapters = {}
+if PHONE_CFG.get("enabled"):
+    adapters["phone"] = EndpointDeviceAdapter(
+        PHONE_CFG.get("base_url"),
+        PHONE_CFG.get("token"),
+        "Phone",
+    )
+if COMPUTER_CFG.get("enabled"):
+    adapters["computer"] = EndpointDeviceAdapter(
+        COMPUTER_CFG.get("base_url"),
+        COMPUTER_CFG.get("token"),
+        "Computer",
+    )
+DEVICE_ORCHESTRATOR = DeviceOrchestrator(adapters) if adapters else None
 
 # check the local_inference_endpoint
 Model_Server = None
@@ -187,9 +224,16 @@ def convert_chat_to_completion(data):
     return data
 
 def send_request(data):
-    api_key = data.pop("api_key")
-    api_type = data.pop("api_type")
+    api_key      = data.pop("api_key")
+    api_type     = data.pop("api_type")
     api_endpoint = data.pop("api_endpoint")
+
+    # ── Claude path ───────────────────────────────────────────────────────────
+    if api_type == "claude":
+        data["api_key"] = api_key
+        return send_request_claude(data, proxies=PROXY)
+
+    # ── OpenAI / Azure path ───────────────────────────────────────────────────
     if use_completion:
         data = convert_chat_to_completion(data)
     if api_type == "openai":
@@ -313,6 +357,118 @@ def chitchat(messages, api_key, api_type, api_endpoint):
         "api_endpoint": api_endpoint
     }
     return send_request(data)
+
+def _normalized_text(text):
+    return (text or "").strip().lower()
+
+def is_status_report_request(text):
+    normalized = _normalized_text(text)
+    status_phrases = {
+        "status report",
+        "system status",
+        "jarvis status",
+        "status",
+        "diagnostics",
+        "health check",
+    }
+    return normalized in status_phrases
+
+def is_high_risk_request(text):
+    normalized = _normalized_text(text)
+    high_risk_keywords = [
+        "unlock door",
+        "unlock the door",
+        "open the door",
+        "transfer money",
+        "bank transfer",
+        "wire transfer",
+        "payment",
+        "delete account",
+        "wipe",
+        "factory reset",
+        "erase phone",
+        "format computer",
+        "shutdown now",
+    ]
+    return any(keyword in normalized for keyword in high_risk_keywords)
+
+def has_explicit_confirmation(text):
+    normalized = _normalized_text(text)
+    # Require a clear confirmation phrase to proceed with high-risk actions.
+    confirmation_phrases = [
+        "confirm",
+        "i confirm",
+        "confirmed",
+        "authorize",
+        "i authorize",
+    ]
+    return any(phrase in normalized for phrase in confirmation_phrases)
+
+def parse_device_command(text):
+    normalized = _normalized_text(text)
+    if not normalized:
+        return None
+
+    if "phone" not in normalized and "computer" not in normalized and "pc" not in normalized:
+        return None
+
+    source = "computer"
+    target = "phone"
+    if "phone" in normalized and ("control computer" in normalized or "control pc" in normalized):
+        source = "phone"
+        target = "computer"
+    elif ("computer" in normalized or "pc" in normalized) and "control phone" in normalized:
+        source = "computer"
+        target = "phone"
+    elif "on phone" in normalized or "phone " in normalized:
+        target = "phone"
+    elif "on computer" in normalized or "on pc" in normalized:
+        target = "computer"
+
+    action = None
+    params = {}
+    if "lock" in normalized:
+        action = "lock_device"
+    elif "unlock" in normalized:
+        action = "unlock_device"
+    elif "unmute" in normalized:
+        action = "mute_audio"
+        params["muted"] = False
+    elif "mute" in normalized:
+        action = "mute_audio"
+        params["muted"] = True
+    elif "shutdown" in normalized:
+        action = "shutdown_device"
+    elif "restart" in normalized:
+        action = "restart_device"
+    elif "open" in normalized:
+        action = "open_app"
+        m = re.search(r"open\s+([a-z0-9_\-\. ]+)", normalized)
+        if m:
+            params["app"] = m.group(1).strip()
+    elif "volume" in normalized:
+        m = re.search(r"(\d{1,3})", normalized)
+        if m:
+            action = "set_volume"
+            params["level"] = max(0, min(100, int(m.group(1))))
+
+    if action is None:
+        return None
+
+    params["source"] = source
+
+    return {"target": target, "action": action, "params": params}
+
+def build_status_report():
+    return {
+        "message": (
+            "Jarvis status report: online. "
+            f"Controller model: {LLM}. "
+            f"Inference mode: {inference_mode}. "
+            f"API type: {API_TYPE if API_TYPE else 'dynamic'}. "
+            "Conversation mode: stateless (current request only)."
+        )
+    }
 
 def parse_task(context, input, api_key, api_type, api_endpoint):
     demos_or_presteps = parse_task_demos_or_presteps
@@ -890,10 +1046,43 @@ def run_task(input, command, results, api_key, api_type, api_endpoint):
 
 def chat_huggingface(messages, api_key, api_type, api_endpoint, return_planning = False, return_results = False):
     start = time.time()
-    context = messages[:-1]
+    # Stateless mode: ignore previous turns and use only current request.
+    context = []
     input = messages[-1]["content"]
     logger.info("*"*80)
     logger.info(f"input: {input}")
+
+    if is_status_report_request(input):
+        return build_status_report()
+
+    if is_high_risk_request(input) and not has_explicit_confirmation(input):
+        return {
+            "message": (
+                "High-risk request detected. Please explicitly confirm to proceed by adding "
+                "'I confirm' to your request."
+            )
+        }
+
+    device_command = parse_device_command(input)
+    if device_command:
+        if device_command["action"] in ["unlock_device", "shutdown_device", "restart_device"] and not has_explicit_confirmation(input):
+            return {
+                "message": (
+                    "High-risk device action requires explicit confirmation. Please resend with "
+                    "'I confirm' to proceed."
+                )
+            }
+        if DEVICE_ORCHESTRATOR is None:
+            return {
+                "message": (
+                    "Device control requested, but no integration is configured. "
+                    "Configure phone/computer endpoints in server config under 'integrations'."
+                )
+            }
+        execution = DEVICE_ORCHESTRATOR.execute(device_command)
+        if execution.get("ok"):
+            return {"message": f"Device action executed on {device_command['target']}: {device_command['action']}."}
+        return {"message": f"Device action failed: {execution.get('error', 'unknown error')}."}
 
     task_str = parse_task(context, input, api_key, api_type, api_endpoint)
 

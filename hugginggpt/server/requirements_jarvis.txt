@@ -1,0 +1,35 @@
+# JARVIS Extended Requirements
+# Install with: pip install -r requirements_jarvis.txt
+
+# ── Core server ────────────────────────────────────────────────────────────────
+flask==2.2.3
+flask_cors==3.0.10
+waitress==2.1.2
+requests>=2.28.0
+pyyaml>=6.0
+
+# ── Claude API ─────────────────────────────────────────────────────────────────
+anthropic>=0.25.0
+
+# ── PC Automation ─────────────────────────────────────────────────────────────
+pyautogui>=0.9.54     # mouse/keyboard control + screenshots
+pyperclip>=1.8.2      # clipboard read/write
+psutil>=5.9.0         # system info, process management
+Pillow>=9.5.0         # screenshots (ImageGrab)
+pywhatkit>=5.4        # WhatsApp Web automation
+
+# ── Voice ─────────────────────────────────────────────────────────────────────
+SpeechRecognition>=3.10.0   # STT wrapper
+pyaudio>=0.2.13             # microphone access (requires PortAudio)
+pyttsx3>=2.90               # offline TTS
+
+# Optional: better local STT (downloads ~150MB model on first use)
+# openai-whisper>=20230918
+
+# Optional: cloud TTS with natural voices
+# elevenlabs>=0.2.24
+
+# ── HuggingFace (keep from original requirements.txt) ─────────────────────────
+tiktoken==0.3.3
+pydub==0.25.1
+gradio==3.24.1
