@@ -1,0 +1,67 @@
+# =====================================================================
+# Jarvis-Core configuration
+# Edit these values for your Tailscale mesh / Mosquitto / Ollama setup.
+# Anything secret (HMAC keys, broker passwords) belongs in .env, not here.
+# =====================================================================
+
+mqtt:
+  # Tailscale magic-IP of the host running Mosquitto. Replace with your own.
+  host: "100.64.0.1"
+  port: 1883
+  client_id: "jarvis-core-pc"
+  keepalive: 30
+  # Persistent session — broker keeps offline messages for this client.
+  clean_session: false
+  qos: 1
+
+  # All Jarvis topics live under a single root for easy ACLs.
+  topics:
+    phone_cmd: "jarvis/phone/cmd"
+    phone_state: "jarvis/phone/state"
+    pc_cmd: "jarvis/pc/cmd"
+    pc_state: "jarvis/pc/state"
+    heartbeat_phone: "jarvis/heartbeat/phone"
+    heartbeat_pc: "jarvis/heartbeat/pc"
+    sensors: "jarvis/sensors/#"
+    alerts: "jarvis/alerts"
+
+ollama:
+  base_url: "http://127.0.0.1:11434"
+  planner_model: "llama3:8b"
+  critic_model: "mistral:7b"
+  # 10-minute idle window before VRAM is released (matches spec).
+  idle_unload_seconds: 600
+  request_timeout_seconds: 60
+
+brain:
+  inbox_dir: "./brain/inbox"
+  history_log: "./brain/history.log"
+  knowledge_graph: "./brain/knowledge_graph.md"
+  # Trigger summarisation when history grows past this many tokens.
+  history_token_limit: 4000
+  # If the Critic rejects three plans in a row the system halts and writes
+  # NEED_ATTENTION.md — matches the "Circuit Breaker" requirement.
+  critic_rejection_threshold: 3
+  critic_min_safety_score: 8
+
+memory:
+  # ChromaDB persistent path — stays inside the project root.
+  chroma_path: "./brain/chroma"
+  collection: "jarvis_long_term"
+  embedding_model: "nomic-embed-text"
+
+sandbox:
+  # ALL file IO from the Executor is locked to this directory.
+  root: "./sandbox"
+
+scheduler:
+  # Hourly self-maintenance pass.
+  maintenance_interval_seconds: 3600
+  # How long after last phone heartbeat we declare it offline.
+  phone_offline_after_seconds: 180
+
+logging:
+  level: "INFO"
+  file: "./logs/jarvis_core.log"
+  rotation: "10 MB"
+  retention: "14 days"

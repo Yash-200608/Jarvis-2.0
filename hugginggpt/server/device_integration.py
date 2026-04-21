@@ -1,3 +1,7 @@
+import threading
+import time
+from collections import defaultdict
+
 import requests
 
 
@@ -25,7 +29,30 @@ class EndpointDeviceAdapter(DeviceAdapter):
             "Content-Type": "application/json",
         }
         payload = {"action": action, "params": params}
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
+
+        # Actions that legitimately take longer than a quick tap
+        SLOW_ACTIONS = {
+            "send_sms", "send_whatsapp", "send_telegram",
+            "send_instagram_dm", "send_message", "make_call",
+            "take_screenshot", "record_screen", "push_file", "pull_file",
+        }
+        timeout = 60 if action in SLOW_ACTIONS else 15
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        except requests.ConnectionError:
+            return {
+                "ok": False,
+                "error": (f"{self.device_name} bridge unreachable at {self.base_url} — "
+                          f"is it running?"),
+            }
+        except requests.Timeout:
+            return {
+                "ok": False,
+                "error": f"{self.device_name} bridge timed out after {timeout}s running {action}",
+            }
+        except requests.RequestException as e:
+            return {"ok": False, "error": f"{self.device_name} bridge error: {e}"}
+
         if response.status_code >= 400:
             return {
                 "ok": False,
@@ -38,6 +65,12 @@ class EndpointDeviceAdapter(DeviceAdapter):
         return {"ok": True, "result": body}
 
 
+# How long to wait after an action that opens/switches apps before running the next command
+APP_OPEN_ACTIONS = {"open_app", "open_url"}
+APP_OPEN_DELAY   = 4.0   # seconds — let the app fully load
+DEFAULT_DELAY    = 0.8   # seconds between other sequential commands
+
+
 class DeviceOrchestrator:
     def __init__(self, adapters):
         self.adapters = adapters or {}
@@ -46,9 +79,10 @@ class DeviceOrchestrator:
         return bool(self.adapters)
 
     def execute(self, command):
+        """Execute a single command dict on the specified target device."""
         if not self.available():
             return {"ok": False, "error": "No phone/computer integration is configured."}
-        target = command.get("target")
+        target  = command.get("target")
         adapter = self.adapters.get(target)
         if adapter is None:
             return {"ok": False, "error": f"Target device '{target}' is not configured."}
@@ -56,3 +90,39 @@ class DeviceOrchestrator:
         params = command.get("params", {})
         return adapter.execute(action, params)
 
+    def execute_multi(self, commands):
+        """
+        Execute a list of commands intelligently:
+        - Commands targeting DIFFERENT devices run in PARALLEL (threads).
+        - Commands targeting the SAME device run SEQUENTIALLY (preserving order)
+          with an automatic delay so apps have time to open before the next action.
+
+        Returns a list of result dicts in the same order as `commands`.
+        """
+        results = [None] * len(commands)
+
+        # Group commands by target, preserving original index
+        device_groups = defaultdict(list)
+        for i, cmd in enumerate(commands):
+            device_groups[cmd.get("target", "phone")].append((i, cmd))
+
+        def run_device_group(group):
+            """Run all commands for one device sequentially."""
+            for step, (idx, cmd) in enumerate(group):
+                results[idx] = self.execute(cmd)
+                # If there's a next command, wait so apps/screens have time to load
+                if step < len(group) - 1:
+                    action = cmd.get("action", "")
+                    delay  = APP_OPEN_DELAY if action in APP_OPEN_ACTIONS else DEFAULT_DELAY
+                    time.sleep(delay)
+
+        # One thread per device group — parallel across devices, sequential within
+        threads = []
+        for target, group in device_groups.items():
+            t = threading.Thread(target=run_device_group, args=(group,), daemon=True)
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join(timeout=120)
+
+        return results

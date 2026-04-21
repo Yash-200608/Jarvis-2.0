@@ -1,0 +1,33 @@
+[
+  {
+    "name":   "morning_briefing",
+    "cron":   "30 7 * * *",
+    "to":     "ian-phone",
+    "skill":  "phone.tts",
+    "params": {
+      "text": "Good morning Ian. It is 7 30 AM."
+    }
+  },
+  {
+    "name":   "battery_watchdog",
+    "cron":   "*/15 * * * *",
+    "to":     "ian-phone",
+    "skill":  "phone.battery"
+  },
+  {
+    "name":   "lunch_ping",
+    "cron":   "0 13 * * *",
+    "to":     "ian-phone",
+    "skill":  "phone.notify",
+    "params": {
+      "title":   "Lunch",
+      "content": "Eat something."
+    }
+  },
+  {
+    "name":   "end_of_workday",
+    "cron":   "0 18 * * *",
+    "to":     "ian-pc",
+    "skill":  "pc.system.lock"
+  }
+]

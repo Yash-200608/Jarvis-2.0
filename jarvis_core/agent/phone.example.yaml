@@ -1,0 +1,13 @@
+# Drop this file alongside phone_executor.py in Termux's home dir.
+# Override broker_host with the Tailscale IP of your PC.
+
+mqtt:
+  host: "100.64.0.1"
+  port: 1883
+  client_id: "jarvis-phone"
+  qos: 1
+  keepalive: 30
+  topics:
+    phone_cmd: "jarvis/phone/cmd"
+    phone_state: "jarvis/phone/state"
+    heartbeat_phone: "jarvis/heartbeat/phone"

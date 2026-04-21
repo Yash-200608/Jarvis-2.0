@@ -1,0 +1,28 @@
+# --- Core async / messaging ---
+aiomqtt==2.3.0
+asyncio-mqtt==0.16.2  # legacy alias for aiomqtt — used by some Termux builds
+paho-mqtt==2.1.0       # transitive dep of aiomqtt; pinned for QoS-1 fixes
+
+# --- HTTP / Ollama ---
+httpx[http2]==0.27.2
+
+# --- Config + validation ---
+pydantic==2.8.2
+PyYAML==6.0.2
+python-dotenv==1.0.1
+
+# --- Observability ---
+loguru==0.7.2
+
+# --- Long-term memory (PC side; do NOT install on Termux) ---
+chromadb==0.5.5
+
+# --- System sensors ---
+psutil==6.0.0
+pygetwindow==0.0.9 ; sys_platform == "win32"
+
+# --- Scheduling ---
+APScheduler==3.10.4
+
+# --- Tokenisation for history compression ---
+tiktoken==0.7.0

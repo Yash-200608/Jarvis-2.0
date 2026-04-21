@@ -164,3 +164,23 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# ── JARVIS-specific ─────────────────────────────────────────────────
+# Per-user Claude Code session state
+.claude/
+# Personal virtualenv (keep name out of tracking)
+jarvis_env/
+# VSCode workspace (can be committed if cleaned, but skip by default)
+.vscode/
+# jarvis_prod runtime artifacts
+hugginggpt/server/jarvis_prod/workspace/jobs.db
+hugginggpt/server/jarvis_prod/workspace/*.db-journal
+hugginggpt/server/jarvis_prod/smoke*.log
+hugginggpt/server/jarvis_prod/smoke.log
+hugginggpt/server/jarvis_prod/schedule.json
+# Legacy server logs (wasn't caught by root-relative pattern above)
+hugginggpt/server/logs/
+# Stray pytest cache anywhere
+pytest-cache-files-*/
+# Live credentials should live in env vars, not checked-in YAML
+# (config.*.yaml stays tracked with placeholders; dev-local keys go in config.*.dev.yaml)
+
