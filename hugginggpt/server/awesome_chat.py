@@ -145,6 +145,28 @@ if config["proxy"]:
         "https": config["proxy"],
     }
 
+# Pooled session w/ retry so HF status probes don't hang the planner on transient
+# 5xx/ECONNRESET and don't open a fresh TCP connection per call. Used by
+# get_model_status() (and any future out-bound HTTP that belongs on the hot path).
+from requests.adapters import HTTPAdapter
+try:
+    # urllib3 >= 2
+    from urllib3.util.retry import Retry
+except ImportError:  # pragma: no cover
+    from requests.packages.urllib3.util.retry import Retry  # type: ignore
+
+_http_session = requests.Session()
+_retry = Retry(
+    total=3,
+    backoff_factor=0.5,                       # 0.5s, 1s, 2s
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset(["GET", "HEAD", "POST"]),
+    raise_on_status=False,
+)
+_adapter = HTTPAdapter(pool_connections=16, pool_maxsize=32, max_retries=_retry)
+_http_session.mount("http://",  _adapter)
+_http_session.mount("https://", _adapter)
+
 inference_mode = config["inference_mode"]
 
 INTEGRATIONS = config.get("integrations", {})
@@ -1033,10 +1055,16 @@ def model_inference(model_id, data, hosted_on, task):
 
 def get_model_status(model_id, url, headers, queue = None):
     endpoint_type = "huggingface" if "huggingface" in url else "local"
-    if "huggingface" in url:
-        r = requests.get(url, headers=headers, proxies=PROXY)
-    else:
-        r = requests.get(url)
+    try:
+        if "huggingface" in url:
+            r = _http_session.get(url, headers=headers, proxies=PROXY, timeout=60)
+        else:
+            r = _http_session.get(url, timeout=10)
+    except requests.RequestException as e:
+        logger.debug("Model status probe failed for %s: %s", model_id, e)
+        if queue:
+            queue.put((model_id, False, None))
+        return False
     if r.status_code == 200 and "loaded" in r.json() and r.json()["loaded"]:
         if queue:
             queue.put((model_id, True, endpoint_type))

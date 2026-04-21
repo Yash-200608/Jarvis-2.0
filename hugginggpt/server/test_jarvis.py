@@ -1,6 +1,10 @@
 """
 Unit tests for JARVIS server components.
 Run: pytest test_jarvis.py -v
+
+Heavy-dep modules (awesome_chat → diffusers/PIL/flask, phone_bridge → flask)
+are loaded lazily via pytest.importorskip so the suite still runs on a bare
+Python install. The memory_module tests have no heavy deps and always run.
 """
 
 import pytest
@@ -10,6 +14,21 @@ import os
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+# Lazy-loaded heavy modules. importorskip returns the module or skips the test.
+def _awesome_chat():
+    # diffusers, PIL, flask, pydub, etc. are all imported at awesome_chat top level.
+    pytest.importorskip("diffusers", reason="awesome_chat requires diffusers")
+    pytest.importorskip("flask",     reason="awesome_chat requires flask")
+    import awesome_chat
+    return awesome_chat
+
+
+def _phone_bridge():
+    pytest.importorskip("flask", reason="phone_bridge requires flask")
+    import phone_bridge
+    return phone_bridge
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -121,8 +140,7 @@ class TestDeviceCommandParsing:
     @pytest.fixture
     def parse_device_command(self):
         """Import and return parse_device_command function."""
-        from awesome_chat import parse_device_command
-        return parse_device_command
+        return _awesome_chat().parse_device_command
 
     def test_parse_phone_lock(self, parse_device_command):
         """Test parsing phone lock command."""
@@ -198,8 +216,8 @@ class TestSafetyChecks:
     @pytest.fixture
     def safety_functions(self):
         """Import safety check functions."""
-        from awesome_chat import is_status_report_request, is_high_risk_request, has_explicit_confirmation
-        return is_status_report_request, is_high_risk_request, has_explicit_confirmation
+        ac = _awesome_chat()
+        return ac.is_status_report_request, ac.is_high_risk_request, ac.has_explicit_confirmation
 
     def test_status_report_detection(self, safety_functions):
         """Test detection of status report requests."""
@@ -237,7 +255,7 @@ class TestRateLimiter:
 
     def test_rate_limiter_allows_under_limit(self):
         """Test that requests under limit are allowed."""
-        from phone_bridge import RateLimiter
+        RateLimiter = _phone_bridge().RateLimiter
         limiter = RateLimiter(max_requests=5, window_seconds=60)
 
         for i in range(5):
@@ -245,7 +263,7 @@ class TestRateLimiter:
 
     def test_rate_limiter_blocks_over_limit(self):
         """Test that requests over limit are blocked."""
-        from phone_bridge import RateLimiter
+        RateLimiter = _phone_bridge().RateLimiter
         limiter = RateLimiter(max_requests=3, window_seconds=60)
 
         # Use up all requests
@@ -257,7 +275,7 @@ class TestRateLimiter:
 
     def test_rate_limiter_different_ips(self):
         """Test that rate limiting is per-IP."""
-        from phone_bridge import RateLimiter
+        RateLimiter = _phone_bridge().RateLimiter
         limiter = RateLimiter(max_requests=1, window_seconds=60)
 
         limiter.is_allowed("192.168.1.1")
@@ -266,7 +284,7 @@ class TestRateLimiter:
 
     def test_rate_limiter_window_expires(self):
         """Test that rate limit window expires."""
-        from phone_bridge import RateLimiter
+        RateLimiter = _phone_bridge().RateLimiter
         limiter = RateLimiter(max_requests=2, window_seconds=1)
 
         # Use up requests
@@ -289,8 +307,8 @@ class TestTaskHelpers:
     @pytest.fixture
     def helpers(self):
         """Import helper functions."""
-        from awesome_chat import find_json, field_extract, replace_slot
-        return find_json, field_extract, replace_slot
+        ac = _awesome_chat()
+        return ac.find_json, ac.field_extract, ac.replace_slot
 
     def test_find_json_in_text(self, helpers):
         """Test extracting JSON from text."""
