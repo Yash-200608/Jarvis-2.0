@@ -76,7 +76,7 @@ email:
   imap_host: imap.gmail.com
   imap_port: 993
   username: yashkadyan2008@gmail.com
-  password: ***REDACTED-GMAIL-APP-PASSWORD***   # Gmail App Password (not your login password)
+  password: ${GMAIL_APP_PASSWORD}   # Gmail App Password (not your login password)
   sender:                                     # leave blank to use username
 
 # ── Voice module ───────────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ voice:
   elevenlabs_model: eleven_monolingual_v1
   whisper_model: base          # tiny | base | small | medium | large
   elevenlabs_voice: Rachel     # only used when tts_backend = elevenlabs
-  elevenlabs_api_key: ***REDACTED-ELEVENLABS-API-KEY***
+  elevenlabs_api_key: ${ELEVENLABS_API_KEY}
   wake_words:                  # say any of these to activate voice
     - "hey jarvis"
     - "jarvis"

@@ -43,7 +43,21 @@ if __name__ != "__main__":
     args.config = "configs/config.gradio.yaml"
     args.mode = "gradio"
 
-config = yaml.load(open(args.config, "r"), Loader=yaml.FullLoader)
+def _expand_env_vars(obj):
+    """Recursively `os.path.expandvars` any strings in a loaded YAML blob.
+    Turns `${VAR}` into `os.environ["VAR"]` (if set, else left as-is). Keeps
+    secrets out of the repo: `config.default.yaml` references `${GROQ_API_KEY}`
+    / `${GMAIL_APP_PASSWORD}` / `${ELEVENLABS_API_KEY}` / `${HF_TOKEN}` and
+    the actual values live only in the user's shell env."""
+    if isinstance(obj, str):
+        return os.path.expandvars(obj)
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(x) for x in obj]
+    return obj
+
+config = _expand_env_vars(yaml.load(open(args.config, "r"), Loader=yaml.FullLoader))
 
 os.makedirs("logs", exist_ok=True)
 os.makedirs("public/images", exist_ok=True)

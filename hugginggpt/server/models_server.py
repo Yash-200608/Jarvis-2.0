@@ -54,7 +54,17 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-config = yaml.load(open(args.config, "r"), Loader=yaml.FullLoader)
+def _expand_env_vars(obj):
+    """Recursively `os.path.expandvars` on any strings. See awesome_chat.py."""
+    if isinstance(obj, str):
+        return os.path.expandvars(obj)
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(x) for x in obj]
+    return obj
+
+config = _expand_env_vars(yaml.load(open(args.config, "r"), Loader=yaml.FullLoader))
 
 # host = config["local_inference_endpoint"]["host"]
 port = config["local_inference_endpoint"]["port"]

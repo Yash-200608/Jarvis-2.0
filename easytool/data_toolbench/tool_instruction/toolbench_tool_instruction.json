@@ -145766,7 +145766,7 @@
                         "name": "key",
                         "type": "STRING",
                         "description": "",
-                        "default": "***REDACTED-GITHUB-PAT***"
+                        "default": "ghp_YOUR_GITHUB_TOKEN_HERE"
                     }
                 ],
                 "Example": {
@@ -145774,7 +145774,7 @@
                     "Parameters": {
                         "repo": "gina305/switch-code",
                         "path": "/",
-                        "key": "***REDACTED-GITHUB-PAT***"
+                        "key": "ghp_YOUR_GITHUB_TOKEN_HERE"
                     }
                 }
             }
