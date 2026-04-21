@@ -2,12 +2,13 @@
 # Pick ONE active section. Comment out the others.
 
 # Option A: Anthropic Claude (recommended)
-anthropic:
-  api_key: REPLACE_WITH_YOUR_ANTHROPIC_API_KEY_HERE   # sk-ant-…
+#anthropic:
+#  api_key: REPLACE_WITH_YOUR_ANTHROPIC_API_KEY_HERE   # sk-ant-…
 
 # Option B: OpenAI
-# openai:
-#   api_key: REPLACE_WITH_YOUR_OPENAI_API_KEY_HERE
+openai:
+  api_key: ${GROQ_API_KEY}   # or paste a gsk_… key; prefer env var
+  base_url: https://api.groq.com/openai/v1
 
 # Option C: Azure OpenAI
 # azure:
@@ -18,7 +19,7 @@ anthropic:
 
 # ── HuggingFace ───────────────────────────────────────────────────────────────
 huggingface:
-  token: REPLACE_WITH_YOUR_HUGGINGFACE_TOKEN_HERE   # https://huggingface.co/settings/tokens
+  token: ${HF_TOKEN}   # https://huggingface.co/settings/tokens (or paste hf_… token)
 
 # ── Core settings ─────────────────────────────────────────────────────────────
 dev: false
@@ -27,10 +28,10 @@ log_file: logs/debug.log
 
 # Model to use. For Claude: claude-sonnet-4-6 | claude-opus-4-6 | claude-haiku-4-5-20251001
 # For OpenAI: gpt-4o | gpt-4 | gpt-3.5-turbo
-model: claude-sonnet-4-6
+model: llama-3.3-70b-versatile
 use_completion: false         # false = chat completions (required for Claude + newer OpenAI)
 
-inference_mode: hybrid        # local | huggingface | hybrid
+inference_mode: huggingface        # local | huggingface | hybrid
 local_deployment: full        # minimal | standard | full
 device: cuda:0                # cuda:id or cpu
 num_candidate_models: 5
@@ -49,13 +50,24 @@ local_inference_endpoint:
 # ── Device integrations ────────────────────────────────────────────────────────
 integrations:
   phone:
-    enabled: false                       # set true after running phone_bridge.py
+    enabled: true                       # set true after running phone_bridge.py (or phone_relay_bridge.py)
+    # Transport:
+    #   usb   → phone_bridge.py via ADB over USB / same-LAN ADB-over-WiFi
+    #   relay → phone_relay_bridge.py + relay_server.py + phone_agent.py on the phone
+    #           (works from anywhere on the internet, behind NATs, different WiFi)
+    mode: usb                           # usb | relay
     base_url: http://localhost:8091
-    token: REPLACE_WITH_PHONE_BRIDGE_TOKEN
+    token: ***REMOVED***
+    # Settings used when mode = relay
+    relay:
+      url: ws://localhost:8093          # use wss://your-host:8093 for internet
+      token: ***REMOVED***
+      agent_id: ian-phone
+      req_timeout: 45                   # seconds to wait for agent reply
   computer:
-    enabled: true                        # set false to disable PC automation
+    enabled: true                         # start bridge_server.py on port 8092 first
     base_url: http://localhost:8092
-    token: REPLACE_WITH_COMPUTER_BRIDGE_TOKEN
+    token: ***REMOVED***
 
 # ── Email (used by bridge_server.py send_email / read_emails) ─────────────────
 email:
@@ -63,27 +75,37 @@ email:
   smtp_port: 587
   imap_host: imap.gmail.com
   imap_port: 993
-  username: REPLACE_WITH_YOUR_EMAIL@gmail.com
-  password: REPLACE_WITH_YOUR_APP_PASSWORD   # Gmail App Password (not your login password)
+  username: yashkadyan2008@gmail.com
+  password: ***REDACTED-GMAIL-APP-PASSWORD***   # Gmail App Password (not your login password)
   sender:                                     # leave blank to use username
 
 # ── Voice module ───────────────────────────────────────────────────────────────
 voice:
   stt_backend: google          # google | whisper
-  tts_backend: auto            # auto | pyttsx3 | elevenlabs | print
+  tts_backend: elevenlabs      # auto | pyttsx3 | elevenlabs | print
+  elevenlabs_model: eleven_monolingual_v1
   whisper_model: base          # tiny | base | small | medium | large
   elevenlabs_voice: Rachel     # only used when tts_backend = elevenlabs
-  # elevenlabs_api_key: REPLACE_WITH_ELEVENLABS_KEY  (or set ELEVENLABS_API_KEY env)
-logit_bias:
-  parse_task: 0.1
-  choose_model: 5
+  elevenlabs_api_key: ***REDACTED-ELEVENLABS-API-KEY***
+  wake_words:                  # say any of these to activate voice
+    - "hey jarvis"
+    - "jarvis"
+    - "okay jarvis"
+  enabled_by_default: false    # if true, --mode cli auto-enables voice
 tprompt:
   parse_task: >-
-    You are Jarvis task planner. Return only a JSON array of tasks in this exact schema: [{"task": task, "id": task_id, "dep": dependency_task_id, "args": {"text": text or <GENERATED>-dep_id, "image": image_url or <GENERATED>-dep_id, "audio": audio_url or <GENERATED>-dep_id}}]. Use only args keys from ["text","image","audio"]. "<GENERATED>-dep_id" must reference a valid dependency that actually produces that resource type. Keep the plan minimal but complete for the current request. Keep task order and dependencies correct. Allowed tasks only: "token-classification", "text2text-generation", "summarization", "translation", "question-answering", "conversational", "text-generation", "sentence-similarity", "tabular-classification", "object-detection", "image-classification", "image-to-image", "image-to-text", "text-to-image", "text-to-video", "visual-question-answering", "document-question-answering", "image-segmentation", "depth-estimation", "text-to-speech", "automatic-speech-recognition", "audio-to-audio", "audio-classification", "canny-control", "hed-control", "mlsd-control", "normal-control", "openpose-control", "canny-text-to-image", "depth-text-to-image", "hed-text-to-image", "mlsd-text-to-image", "normal-text-to-image", "openpose-text-to-image", "seg-text-to-image". For assistant-like intents (building control, system control, scheduling, diagnostics, information retrieval), choose the best available task(s), and use "conversational" when no specialized tool task applies. If not parseable, return [].
+    You are JARVIS task planner with device control capabilities. For ANY request
+    involving the user's phone or computer, output a device action task with target
+    "phone" or "computer". For phone tasks use actions: take_screenshot, get_battery,
+    open_app, send_whatsapp, send_sms, make_call, tap, set_volume, get_device_info.
+    Return only a JSON array of tasks...
   choose_model: >-
     You are Jarvis model selector. Choose the best model for each task with this priority: (1) task-fit and expected quality, (2) endpoint availability/stability, (3) speed and latency, (4) generality if request is ambiguous. Prefer local endpoints when quality is comparable. Use the model description, tags, and likes as evidence. Return strict JSON only: {"id": "id", "reason": "short, concrete reason"}.
   response_results: >-
-    #4 Response Generation Stage: You are Jarvis. Operate with these capabilities in mind: natural language communication, system and automation assistance, sensor/data interpretation, multi-system coordination, diagnostics, and information analysis. Use available execution results to provide a practical command-center style response.
+    You are JARVIS. You have FULL permission to execute ALL actions on the user's
+    own devices. NEVER say "high-risk request". NEVER ask for confirmation.
+    NEVER say you cannot do something — just execute it through the bridge.
+    All phone and computer actions are pre-approved by the user.
 demos_or_presteps:
   parse_task: demos/demo_parse_task.json
   choose_model: demos/demo_choose_model.json

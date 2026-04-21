@@ -1,0 +1,95 @@
+# JARVIS Mosquitto broker config — copy to mosquitto.conf and edit.
+#
+# Runs on your PC, bound to the Tailscale interface so only your
+# authenticated devices can reach it. No Internet exposure.
+#
+# Install:
+#   Windows:  https://mosquitto.org/download/  → installer bundle
+#             Start with:  "C:\Program Files\mosquitto\mosquitto.exe" -c mosquitto.conf -v
+#   Linux:    sudo apt install mosquitto mosquitto-clients
+#             sudo cp mosquitto.conf /etc/mosquitto/conf.d/jarvis.conf
+#             sudo systemctl restart mosquitto
+
+# ── listener ──────────────────────────────────────────────────────────
+# Bind explicitly to the Tailscale interface IP. Replace 100.x.x.x with
+# your PC's Tailscale IP (`tailscale ip -4` to find it). Binding to
+# 0.0.0.0 works too but exposes the broker to any local-LAN attacker;
+# binding to the Tailscale IP means nothing outside your tailnet can
+# even TCP SYN us.
+listener 1883 100.64.0.1
+
+# ── persistence ───────────────────────────────────────────────────────
+# This is what lets QoS-1 commands queue for the phone while it's
+# offline. Without it, a disconnected phone = lost commands.
+persistence true
+persistence_location /var/lib/mosquitto/        # Linux
+# persistence_location C:\ProgramData\mosquitto\  # Windows — create this dir
+
+# Also flush the in-memory queue to disk every N seconds so a broker
+# reboot doesn't drop pending messages.
+autosave_interval 60
+autosave_on_changes false
+
+# ── MQTT v5 session expiry ────────────────────────────────────────────
+# Match protocol.py:SESSION_EXPIRY_SECS (24 h). If the phone is offline
+# longer than this, its queued commands are discarded. 24 h is the
+# right trade-off for us: long enough to survive overnight and a
+# flight, short enough that stale commands don't accumulate forever.
+max_keepalive 120
+max_packet_size 1048576
+
+# Clients can request up to 100 inflight QoS-1 messages at a time.
+# We never send bursts that big, but this gives headroom if the
+# phone comes back online after a long absence and has queue to drain.
+max_inflight_messages 100
+max_queued_messages 1000
+
+# ── auth ──────────────────────────────────────────────────────────────
+allow_anonymous false
+password_file /etc/mosquitto/passwd              # Linux
+# password_file C:\ProgramData\mosquitto\passwd.txt  # Windows
+
+# To create the password file:
+#   mosquitto_passwd -c passwd jarvis
+#   (prompts twice for password; match JARVIS_PASS in start_agent.sh
+#    and --password on the brain's CLI)
+
+# ── ACL ───────────────────────────────────────────────────────────────
+# Lock the topic tree so compromised creds can't escape jarvis/.
+acl_file /etc/mosquitto/jarvis.acl
+# On Windows use a full path:
+# acl_file C:\ProgramData\mosquitto\jarvis.acl
+
+# ── logging ───────────────────────────────────────────────────────────
+log_dest stdout
+log_type error
+log_type warning
+log_type notice
+# Uncomment for deep debugging (noisy):
+# log_type information
+# log_type debug
+# connection_messages true
+
+# ── tuning ────────────────────────────────────────────────────────────
+# MQTT keepalive floor. aiomqtt on both sides sends PINGREQ every
+# 60 s (KEEPALIVE_SECS); broker tolerates up to max_keepalive.
+# If the phone's NAT table forgets the connection, our PINGREQ
+# will either punch through or our retry loop kicks in. No magic
+# needed beyond MQTT's built-in keepalive.
+
+# ──────────────────────────────────────────────────────────────────────
+# ACL FILE CONTENTS — save this separately as jarvis.acl:
+# ──────────────────────────────────────────────────────────────────────
+#
+#   # Admin (the PC brain) can do anything under jarvis/.
+#   user jarvis
+#   topic readwrite jarvis/#
+#
+#   # If you split creds per-node (recommended in future):
+#   # user ian-phone
+#   # topic write    jarvis/node/ian-phone/response
+#   # topic write    jarvis/node/ian-phone/event
+#   # topic write    jarvis/node/ian-phone/presence
+#   # topic write    jarvis/node/ian-phone/state
+#   # topic write    jarvis/node/ian-phone/heartbeat
+#   # topic read     jarvis/node/ian-phone/cmd
