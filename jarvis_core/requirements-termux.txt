@@ -1,0 +1,10 @@
+# Minimal deps for the Termux phone executor.
+# Install with: pip install -r requirements-termux.txt
+# chromadb/psutil are deliberately absent — they don't compile cleanly on Termux.
+
+aiomqtt==2.3.0
+paho-mqtt==2.1.0
+pydantic==2.8.2
+PyYAML==6.0.2
+python-dotenv==1.0.1
+loguru==0.7.2

@@ -1,0 +1,21 @@
+# JARVIS brain (PC) Python deps.
+# Python 3.11+ required (uses asyncio.TaskGroup, asyncio.timeout(),
+# except* syntax).
+#
+# Install:  pip install -r requirements_pc.txt
+
+aiomqtt>=2.0.0        # MQTT v5 async client
+psutil>=5.9.0         # system metrics + process control (pc_skills)
+pyautogui>=0.9.54     # keyboard/mouse/screen automation
+Pillow>=10.0.0        # PNG encoding for pyautogui screenshots
+PyYAML>=6.0           # optional: schedule.yaml instead of schedule.json
+croniter>=6.0.0       # full crontab syntax (ranges, names, L/#) for scheduler
+
+# Optional: Langfuse observability. If LANGFUSE_SECRET_KEY env is unset,
+# tracing is a no-op — no network calls, no import errors.
+langfuse>=4.0.0
+
+# Windows-only audio control. Safe to leave on non-Windows; the
+# agent imports lazily and skips the skill if import fails.
+pycaw>=20240210; sys_platform == "win32"
+comtypes>=1.2.0; sys_platform == "win32"

@@ -1,0 +1,13 @@
+# JARVIS phone agent (Termux) Python deps.
+# Python 3.11+ required (provided by `pkg install python` in Termux,
+# which currently ships 3.12).
+#
+# Install inside Termux:
+#   pkg install python termux-api
+#   pip install -r requirements_phone.txt
+#
+# Everything else (SMS, torch, TTS, vibration, location, notifications)
+# is handled by the `termux-*` CLIs from the Termux:API Android app —
+# no Python bindings needed.
+
+aiomqtt>=2.0.0

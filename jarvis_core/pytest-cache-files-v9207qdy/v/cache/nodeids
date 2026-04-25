@@ -1,0 +1,11 @@
+[
+  "tests/test_sandbox.py::test_absolute_path_remapped",
+  "tests/test_sandbox.py::test_is_inside_sandbox_matches",
+  "tests/test_sandbox.py::test_parent_traversal_blocked",
+  "tests/test_sandbox.py::test_simple_relative",
+  "tests/test_sandbox.py::test_symlink_escape_blocked",
+  "tests/test_signing.py::test_replay_outside_skew_window_rejected",
+  "tests/test_signing.py::test_round_trip",
+  "tests/test_signing.py::test_tampered_action_rejected",
+  "tests/test_signing.py::test_wrong_key_rejected"
+]
