@@ -1,0 +1,259 @@
+==============================================================================
+  JARVIS PHONE WATCHDOG — Tasker Configuration + Android Hardening
+==============================================================================
+
+This document is the *complete* Android-side playbook for keeping
+agent_phone.py alive 24/7. It covers three layers of defense:
+
+    Layer 1: termux-wake-lock   (blocks Doze sleep)
+    Layer 2: Tasker watchdog    (restarts on death)
+    Layer 3: Phantom Process    (stops Android from pre-emptive kill)
+             Killer bypass
+
+You need all three. WakeLock alone won't save you on Android 12+.
+Tasker alone can't wake the device fast enough to re-pair an MQTT
+session. The combo of all three gets you ~99.9 % uptime.
+
+───────────────────────────────────────────────────────────────────────────────
+0. PRE-REQS (INSTALL ONCE)
+───────────────────────────────────────────────────────────────────────────────
+
+From F-Droid (NOT Play Store — Play builds are stale and can't talk
+to each other):
+
+    • Termux                https://f-droid.org/packages/com.termux/
+    • Termux:API            https://f-droid.org/packages/com.termux.api/
+    • Termux:Boot           https://f-droid.org/packages/com.termux.boot/
+    • Termux:Tasker         https://f-droid.org/packages/com.termux.tasker/
+
+From Play Store (paid):
+    • Tasker                https://play.google.com/store/apps/details?id=net.dinglisch.android.taskerm
+
+Inside Termux (one-time):
+
+    pkg update && pkg upgrade -y
+    pkg install -y python git termux-api openssh
+    pip install --upgrade "aiomqtt>=2.0.0"
+
+    # Grant Termux:API its permissions:
+    termux-setup-storage
+
+    # Copy your project into Termux:
+    cd ~
+    mkdir -p jarvis
+    # (scp / git clone / adb push your jarvis_prod/ files here)
+
+    chmod +x ~/jarvis/start_agent.sh
+
+    # Auto-start on boot: Termux:Boot runs anything in ~/.termux/boot/
+    mkdir -p ~/.termux/boot
+    ln -sf ~/jarvis/start_agent.sh ~/.termux/boot/start_agent.sh
+
+───────────────────────────────────────────────────────────────────────────────
+1. TASKER WATCHDOG PROFILE
+───────────────────────────────────────────────────────────────────────────────
+
+  Profile name: JARVIS Watchdog
+  ────────────────────────────────
+  Context:  Time  →  Every 2 minutes, from 00:00 to 23:59
+            (alt: use Event → Monitor Start as a complement)
+
+  Linked Task:  jarvis_health_check
+  ────────────────────────────────
+
+  TASK STEPS:
+
+    A1. Run Shell                               [category: Code]
+          Command:   pgrep -f agent_phone.py
+          Timeout:   5
+          Use Root:  OFF
+          Store Result In:   %pid
+          Store Exit Code In: %err
+          Continue Task After Error: ON
+
+    A2. IF  %err  ~  0          (exit 0 means pgrep found it → alive)
+    A3.   Stop                  (nothing to do, bail out)
+    A4. END IF
+
+    A5. Flash                    [optional visual debug]
+          Text: "JARVIS agent dead — restarting"
+          Long: OFF
+
+    A6. Plugin → Termux:Tasker   [the restart]
+          Executable:   start_agent.sh
+          Working Dir:  /data/data/com.termux/files/home/jarvis
+          Stdin:        (leave blank)
+          Arguments:    (leave blank)
+          Terminal Session: OFF
+          Wait for result: ON
+          Timeout:       30
+
+    A7. Wait                     5 seconds
+
+    A8. Run Shell                (verify the restart actually worked)
+          Command: pgrep -f agent_phone.py
+          Store Exit Code In: %err2
+
+    A9. IF  %err2  !~  0
+    A10.   Notify
+              Title: "JARVIS watchdog failed"
+              Text:  "agent_phone.py did not restart — check Termux"
+              Permanent: ON
+              Priority: 5
+    A11. END IF
+
+  ────────────────────────────────
+
+  IMPORTING THIS INTO TASKER:
+  This is describing the profile, not a .prj.xml import. You build it
+  in-app once. If you want a ready-made import, open Tasker → long-press
+  the profile list header → Data → Import and paste Tasker XML; there's
+  no XML here on purpose, because hand-built profiles survive Tasker
+  version bumps better than imports.
+
+───────────────────────────────────────────────────────────────────────────────
+2. BATTERY OPTIMIZATION SETTINGS (stock Android)
+───────────────────────────────────────────────────────────────────────────────
+
+Settings → Apps → [app name] → Battery → "Unrestricted"
+
+  Apply "Unrestricted" to ALL of these:
+
+    ☐  Termux
+    ☐  Termux:API
+    ☐  Termux:Boot
+    ☐  Termux:Tasker
+    ☐  Tasker
+
+Also:
+  ☐  Settings → Battery → Adaptive Battery → OFF
+      (or leave ON but pin all 5 apps as "Never optimize")
+
+  ☐  Settings → Apps → Special app access → Battery optimization
+      → For each of the 5 apps: set to "Don't optimize"
+
+  ☐  Settings → Apps → Special app access → Display over other apps
+      → Tasker: ALLOW  (needed for some Tasker actions post-Android 12)
+
+  ☐  Settings → Apps → Special app access → Device admin apps
+      → Tasker: ALLOW  (optional — gives it more clout)
+
+───────────────────────────────────────────────────────────────────────────────
+3. OEM-SPECIFIC KILLER BYPASS (the real bosses)
+───────────────────────────────────────────────────────────────────────────────
+
+Stock Android is easy. The nightmares live in vendor skins.
+
+  Xiaomi / MIUI / HyperOS:
+    • Security app → Battery → App battery saver → Termux → "No restrictions"
+    • Security app → Permissions → Autostart → Enable: Termux, Tasker,
+                                                      Termux:Boot, Termux:Tasker
+    • Settings → Apps → Permissions → Other permissions → Termux:
+          "Start in background": ALLOW
+          "Display pop-up windows while running in background": ALLOW
+    • Recent apps → swipe up on Termux → tap the padlock icon (locks it in memory)
+
+  OnePlus / ColorOS / OxygenOS (v12+):
+    • Settings → Battery → Battery optimization → Don't optimize Termux + Tasker
+    • Settings → Apps → App management → Termux → Battery usage → Allow background activity
+    • Settings → Privacy → Auto-launch → Enable: Termux, Tasker
+
+  Samsung / One UI:
+    • Settings → Battery and device care → Battery → Background usage limits →
+      "Never sleeping apps" → ADD: Termux, Termux:API, Tasker
+    • Settings → Battery and device care → Memory → check that Termux is NOT
+      in the list of apps to "put to sleep"
+    • Disable Samsung Device Care auto-optimization entirely if you can
+
+  Huawei / EMUI:
+    • Settings → Battery → App launch → Termux → Manage manually → enable all 3
+      (Auto-launch, Secondary launch, Run in background)
+
+  Vivo / Funtouch / OriginOS:
+    • iManager → App manager → Autostart manager → Enable Termux, Tasker
+    • Settings → Battery → High background power consumption → Allow Termux
+
+  Oppo / Realme / ColorOS:
+    • Same as OnePlus above.
+
+───────────────────────────────────────────────────────────────────────────────
+4. PHANTOM PROCESS KILLER BYPASS (Android 12+) — CRITICAL
+───────────────────────────────────────────────────────────────────────────────
+
+Android 12 introduced a kernel-level killer that caps "phantom processes"
+(processes started by an app but not tracked by ActivityManager) at 32.
+Python + termux-api subprocesses CAN trip this cap. When it trips, the
+whole Termux session is nuked with no warning.
+
+Bypass (one-time, requires ADB on PC):
+
+    Enable USB debugging on phone, plug into PC, then from a PC shell:
+
+    adb shell "/system/bin/device_config put activity_manager \
+        max_phantom_processes 2147483647"
+    adb shell "/system/bin/device_config set_sync_disabled_for_tests persistent"
+    adb shell "settings put global settings_enable_monitor_phantom_procs false"
+
+Notes:
+  • The first command raises the cap to effectively infinite.
+  • The second prevents Google from syncing a server-pushed config that
+    would reset the cap overnight. THIS IS THE ONE MOST PEOPLE MISS.
+  • The third disables phantom-proc monitoring entirely on some OEMs.
+  • These persist across reboots. They do NOT persist across factory reset.
+  • Verify after reboot:
+        adb shell "device_config get activity_manager max_phantom_processes"
+    should print 2147483647.
+
+───────────────────────────────────────────────────────────────────────────────
+5. WAKE LOCK — WHAT IT IS, WHY IT MATTERS
+───────────────────────────────────────────────────────────────────────────────
+
+`termux-wake-lock` acquires a PARTIAL_WAKE_LOCK via the Termux:API service.
+Effect: the CPU stays on even with the screen off. Doze cannot suspend
+our Python event loop, so our TCP keepalive to the MQTT broker keeps
+firing and aiomqtt never drops.
+
+Where we take it:
+    • start_agent.sh calls it FIRST, before launching python.
+    • It's a no-op if already held — safe for the Tasker watchdog to
+      re-invoke start_agent.sh as many times as it wants.
+
+Drawback:
+    • Small, constant battery drain (< 1 %/h on most devices because
+      our RSS is tiny and we sleep most of the time).
+    • Shows the persistent "Termux is running" notification. Can't
+      hide it — Android requires it for any wake-locking foreground-
+      adjacent service.
+
+Release:
+    • termux-wake-unlock   (if you ever want to stop)
+    • Reboot (which Termux:Boot will immediately undo on startup)
+
+───────────────────────────────────────────────────────────────────────────────
+6. SMOKE TEST CHECKLIST
+───────────────────────────────────────────────────────────────────────────────
+
+Do these in order. Stop at the first failure.
+
+  ☐  1. Reboot the phone.
+  ☐  2. Wait 60 s. SSH into Termux (via Tailscale SSH) OR open Termux app.
+        Run: pgrep -f agent_phone.py    → should print a PID.
+  ☐  3. From the PC brain: phone.battery → should return in < 2 s.
+  ☐  4. Lock phone, wait 10 min. Re-run phone.battery → still < 2 s.
+  ☐  5. In Termux:  kill <pid of python>
+        Wait 2 min. Tasker watchdog should have restarted it.
+        Verify: pgrep -f agent_phone.py → new PID.
+  ☐  6. Turn WiFi OFF on phone. Phone switches to mobile data.
+        Wait 30 s. Run phone.battery from PC → should succeed.
+        (This tests Tailscale's seamless IP migration + our auto-reconnect.)
+  ☐  7. Turn off mobile data AND WiFi for 5 min. From PC, fire:
+            phone.tts text="hello from the void"
+        Turn WiFi back on. Within 10 s of reconnect, the phone should
+        speak. (This tests MQTT's broker-side QoS-1 persistence.)
+  ☐  8. Check battery usage after 24 h. Termux should be < 5 % of screen-off
+        drain. If higher, you've got a runaway skill or heartbeat loop.
+
+If any of these fail, check this file's corresponding section and
+/data/data/com.termux/files/home/jarvis/agent.log.
+
+==============================================================================

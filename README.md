@@ -4,6 +4,21 @@
 
 JARVIS is a fully local, voice-activated personal AI assistant that can control your **Windows PC**, **Android phone**, **email**, **WhatsApp**, and **browser** — all through natural language commands, spoken or typed. It is built on top of the [HuggingGPT](https://arxiv.org/abs/2303.17580) framework and powered by **Anthropic Claude** as its reasoning brain.
 
+> **Repo home:** [`Yash-200608/Jarvis-2.0`](https://github.com/Yash-200608/Jarvis-2.0) (private). The previous public repo `Yash-200608/JARVIS` is preserved locally as the `jarvis-old` remote.
+
+---
+
+## Two stacks under one roof
+
+This repo now ships **two parallel runtimes**, and they share the same `awesome_chat.py` brain plus the same `configs/`:
+
+| Stack | Where | Transport | Status | When to use |
+|---|---|---|---|---|
+| **Legacy HTTP-bridge stack** | `hugginggpt/server/` (root) | Flask servers on `:8092` (PC) and `:8091` (phone) | Stable | Single-host development, voice mic on the same box, USB-tethered Android |
+| **Production MQTT stack** | `hugginggpt/server/jarvis_prod/` | aiomqtt QoS-1 over Tailscale | **Draft** (smoke-tested, awaiting first live Tailscale run) | Real-world deployment with phone-anywhere, Telegram gateway, cron jobs, observability |
+
+Pick one. The legacy stack is documented first (most users start there); the `jarvis_prod` stack is documented further down.
+
 ---
 
 ## Table of Contents
@@ -13,15 +28,20 @@ JARVIS is a fully local, voice-activated personal AI assistant that can control 
 3. [Prerequisites](#prerequisites)
 4. [Installation](#installation)
 5. [Configuration](#configuration)
-6. [Running JARVIS](#running-jarvis)
-7. [Available Actions Reference](#available-actions-reference)
-8. [Voice Commands](#voice-commands)
-9. [Android Phone Control](#android-phone-control)
-10. [Email & WhatsApp Setup](#email--whatsapp-setup)
-11. [Switching LLM Backends](#switching-llm-backends)
-12. [Project Structure](#project-structure)
-13. [Troubleshooting](#troubleshooting)
-14. [Contributing](#contributing)
+6. [Required Environment Variables](#required-environment-variables)
+7. [Running JARVIS — Legacy HTTP Stack](#running-jarvis--legacy-http-stack)
+8. [Running JARVIS — Production MQTT Stack (`jarvis_prod`)](#running-jarvis--production-mqtt-stack-jarvis_prod)
+9. [Available Actions Reference](#available-actions-reference)
+10. [Voice Commands](#voice-commands)
+11. [Android Phone Control](#android-phone-control)
+12. [Email & WhatsApp Setup](#email--whatsapp-setup)
+13. [Switching LLM Backends](#switching-llm-backends)
+14. [Observability — Langfuse SDK v4](#observability--langfuse-sdk-v4)
+15. [Tests](#tests)
+16. [Project Structure](#project-structure)
+17. [Security](#security)
+18. [Troubleshooting](#troubleshooting)
+19. [Contributing](#contributing)
 
 ---
 
@@ -39,31 +59,36 @@ JARVIS is a fully local, voice-activated personal AI assistant that can control 
 | **AI Tasks** | Text generation, image captioning, translation, summarization via HuggingFace |
 | **Web** | Open URLs, search the web |
 | **Media** | Play/pause, next/previous track, volume via media keys |
+| **Telegram gateway** *(prod)* | DM JARVIS on Telegram from anywhere; allowlist + pairing; replies route through the same brain |
+| **Cron jobs** *(prod)* | Full crontab via `croniter` (ranges, names, `L`, `#`, lists, steps); SQLite-backed `JobLog` with hot-path counter |
+| **Reflector loop** *(prod)* | pentagi-style fail-streak memory in SQLite; brain self-corrects after repeated failures |
 
 ---
 
 ## Architecture
 
+### Legacy HTTP-bridge stack
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        YOU (User)                               │
-│              Voice ("Hey Jarvis") or Text (chat)               │
+│              Voice ("Hey Jarvis") or Text (chat)                │
 └────────────────────────┬────────────────────────────────────────┘
                          │
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   voice_module.py                               │
-│  Mic → Wake Word → STT (Google/Whisper) → HTTP → TTS Response  │
+│  Mic → Wake Word → STT (Google/Whisper) → HTTP → TTS Response   │
 └────────────────────────┬────────────────────────────────────────┘
                          │  POST /hugginggpt
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   awesome_chat.py  (port 8004)                  │
 │                                                                 │
-│  ① Parse Task   →  ② Select Model  →  ③ Execute  →  ④ Respond  │
+│  ① Parse Task   →  ② Select Model  →  ③ Execute  →  ④ Respond   │
 │                                                                 │
-│  LLM Brain: Claude (claude_adapter.py) | OpenAI | Azure        │
-└──────────┬────────────────────────────────────────┬────────────┘
+│  LLM Brain: Claude (claude_adapter.py) | Groq | OpenAI | Azure  │
+└──────────┬────────────────────────────────────────┬─────────────┘
            │ HuggingFace Models                     │ Device Actions
            ▼                                        ▼
 ┌──────────────────────┐             ┌──────────────────────────────┐
@@ -82,14 +107,54 @@ JARVIS is a fully local, voice-activated personal AI assistant that can control 
                                      └──────────────────────────────┘
 ```
 
-**Data flow:** Your command enters through voice or text → Claude parses it into a task plan → each task is either routed to a HuggingFace AI model (for image/audio/NLP tasks) or to a bridge server that executes it directly on your devices → the final response is spoken back to you.
+### Production MQTT stack (`jarvis_prod/`)
+
+```
+┌──────────────────┐                                ┌─────────────────────┐
+│  Phone (Termux)  │                                │   PC (Windows)      │
+│  agent_phone.py  │                                │   brain_pc.py       │
+│                  │                                │                     │
+│  ┌────────────┐  │   Tailscale (encrypted WAN)    │  ┌───────────────┐  │
+│  │ aiomqtt    │  │ ─────────────────────────────► │  │ aiomqtt       │  │
+│  │ QoS-1      │ ◄┼ ─────────────────────────────  │  │ correlator    │  │
+│  │ session-LWT│  │     Mosquitto broker           │  │ QoS-1, LWT    │  │
+│  └────────────┘  │   (jarvis/cmd, jarvis/resp)    │  └───────┬───────┘  │
+│                  │                                │          │          │
+│  Termux:API      │                                │   ┌──────▼──────┐   │
+│  (sms/dial/      │                                │   │ awesome_chat│   │
+│   battery/...)   │                                │   │  brain      │   │
+└──────────────────┘                                │   └──────┬──────┘   │
+                                                    │          │          │
+                                                    │   ┌──────▼──────┐   │
+                                                    │   │ Reflector   │   │
+                                                    │   │ + JobLog    │   │
+                                                    │   │ (SQLite)    │   │
+                                                    │   └─────────────┘   │
+                                                    │                     │
+                                                    │   Telegram gateway  │
+                                                    │   ◄── DM allowlist  │
+                                                    │                     │
+                                                    │   croniter scheduler│
+                                                    │                     │
+                                                    │   Langfuse v4 traces│
+                                                    └─────────────────────┘
+```
+
+**Trace hierarchy (Langfuse v4):**
+
+```
+brain.prompt        (root, session=chat_id)
+  ├─ awesome_chat.parse_device_command   (as_type="generation",
+  │                                       model=llama-3.3-70b-versatile)
+  └─ jarvis.send_command                 (per round-trip)
+```
 
 ---
 
 ## Prerequisites
 
 ### All platforms
-- Python 3.9 or higher
+- Python **3.11+** (the prod stack uses `asyncio.TaskGroup`, `asyncio.timeout()`, `except*`)
 - Git
 
 ### PC Bridge (`bridge_server.py`)
@@ -97,11 +162,17 @@ JARVIS is a fully local, voice-activated personal AI assistant that can control 
 - Gmail or Outlook account with App Password enabled (for email features)
 - Chrome logged into WhatsApp Web (for WhatsApp features)
 
-### Phone Bridge (`phone_bridge.py`)
+### Phone Bridge (`phone_bridge.py`, legacy stack)
 - Android device with **USB Debugging enabled**
   - Settings → About Phone → tap Build Number 7× → Developer Options → Enable USB Debugging
 - [Android Platform Tools (ADB)](https://developer.android.com/tools/releases/platform-tools) installed and on your system PATH
 - USB cable connecting phone to PC
+
+### Phone Agent (`agent_phone.py`, prod stack)
+- Android device running [Termux](https://termux.dev/) with [Termux:API](https://wiki.termux.com/wiki/Termux:API) installed
+- `pkg install python termux-api` inside Termux
+- [Tailscale](https://tailscale.com/) account connecting phone and PC to the same tailnet
+- Mosquitto broker (the launcher script auto-installs and configures it)
 
 ### Voice Module (`voice_module.py`)
 - Microphone
@@ -111,8 +182,10 @@ JARVIS is a fully local, voice-activated personal AI assistant that can control 
   - Linux: `sudo apt install portaudio19-dev`
 
 ### AI Brain
-- An **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com)
+- An **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com), **or**
+- A **Groq API key** (the prod stack uses `llama-3.3-70b-versatile` for device-command parsing)
 - (Optional) A **HuggingFace token** for AI model tasks (image, audio, NLP)
+- (Optional) A **Langfuse public + secret key pair** for end-to-end tracing
 
 ---
 
@@ -121,8 +194,8 @@ JARVIS is a fully local, voice-activated personal AI assistant that can control 
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/your-username/JARVIS.git
-cd JARVIS
+git clone https://github.com/Yash-200608/Jarvis-2.0.git
+cd Jarvis-2.0
 ```
 
 ### 2. Create a virtual environment
@@ -145,9 +218,14 @@ pip install -r hugginggpt/server/requirements_jarvis.txt
 
 # Original HuggingGPT dependencies (AI model tasks)
 pip install -r hugginggpt/server/requirements.txt
+
+# Production MQTT stack (PC side)
+pip install -r hugginggpt/server/jarvis_prod/requirements_pc.txt
 ```
 
-> **Note for PyAudio on Windows:** If `pip install pyaudio` fails, try:
+> On the phone (Termux) for the prod stack, install `requirements_phone.txt` instead.
+
+> **Note for PyAudio on Windows:** if `pip install pyaudio` fails, try:
 > ```bash
 > pip install pipwin
 > pipwin install pyaudio
@@ -169,18 +247,29 @@ pip install elevenlabs
 
 ## Configuration
 
-All settings live in `hugginggpt/server/configs/config.default.yaml`. Open it and fill in your keys:
+All settings live in `hugginggpt/server/configs/config.default.yaml`. **Secrets in this file are now `${VAR}` references** that resolve from the shell environment — they never sit in YAML on disk.
 
-### Step 1 — Set your Claude API key
+The config loader (`awesome_chat.py` and `models_server.py`) walks the loaded YAML recursively via `_expand_env_vars()` and calls `os.path.expandvars()` on every string. So `${GROQ_API_KEY}` in YAML becomes the value of `$GROQ_API_KEY` at load time.
+
+### What's referenced as `${VAR}` in `config.default.yaml`
 
 ```yaml
-anthropic:
-  api_key: sk-ant-YOUR_KEY_HERE
+# LLM brains
+groq:
+  api_key: ${GROQ_API_KEY}
+huggingface:
+  token: ${HF_TOKEN}
+
+# Email & voice
+email:
+  password: ${GMAIL_APP_PASSWORD}
+elevenlabs:
+  api_key: ${ELEVENLABS_API_KEY}
 ```
 
-### Step 2 — Set your bridge tokens
+### Set your bridge tokens
 
-These are secret strings you choose — they authenticate the bridge servers. Pick any random string (e.g. `my-secret-token-123`).
+These are secret strings you choose — they authenticate the bridge servers. Any random string works.
 
 ```yaml
 integrations:
@@ -188,46 +277,55 @@ integrations:
     enabled: true
     base_url: http://localhost:8092
     token: my-computer-secret-token
-
   phone:
-    enabled: true                    # set false if you don't have an Android device
+    enabled: true                 # set false if you don't have an Android device
     base_url: http://localhost:8091
     token: my-phone-secret-token
 ```
 
-Use the **same tokens** in the corresponding launch scripts below.
-
-### Step 3 — Set email credentials (optional)
-
-```yaml
-email:
-  smtp_host: smtp.gmail.com
-  smtp_port: 587
-  imap_host: imap.gmail.com
-  imap_port: 993
-  username: you@gmail.com
-  password: your-gmail-app-password   # NOT your login password — see below
-```
-
-> **Gmail App Password:** Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), create an App Password for "Mail", and paste the 16-character code here.
-
-### Step 4 — (Optional) Set HuggingFace token
-
-```yaml
-huggingface:
-  token: hf_YOUR_TOKEN_HERE
-```
+Use the **same tokens** in the launch scripts.
 
 ---
 
-## Running JARVIS
+## Required Environment Variables
 
-JARVIS requires **up to 3 terminal windows** running simultaneously. Start them in this order:
+Set these in your shell before launching anything. The repo will not read secrets from YAML.
+
+```powershell
+# LLM brains
+$env:GROQ_API_KEY       = 'gsk_...'         # Groq cloud (used by jarvis_prod)
+$env:ANTHROPIC_API_KEY  = 'sk-ant-...'      # Claude (used by legacy stack)
+$env:HF_TOKEN           = 'hf_...'          # HuggingFace, optional
+
+# Email & voice
+$env:GMAIL_APP_PASSWORD = '...'             # 16-char app password
+$env:ELEVENLABS_API_KEY = 'sk_...'          # optional, natural TTS
+
+# MQTT broker (jarvis_prod stack only)
+$env:JARVIS_PASS        = '...'             # mosquitto broker password
+
+# Telegram gateway (jarvis_prod stack, optional)
+$env:TELEGRAM_BOT_TOKEN = '...'
+$env:TELEGRAM_DM_ALLOWLIST = '12345,67890'  # comma-separated chat IDs
+
+# Langfuse observability (optional, no-op if unset)
+$env:LANGFUSE_PUBLIC_KEY = 'pk-lf-...'
+$env:LANGFUSE_SECRET_KEY = 'sk-lf-...'
+$env:LANGFUSE_HOST       = 'https://cloud.langfuse.com'
+```
+
+> **Why this matters:** earlier history of this repo had three live secrets committed (Gmail password, ElevenLabs key, an upstream GitHub PAT). They've been purged from HEAD **and** from full git history via `git filter-repo`. Rotate all three regardless — they were public for a few hours before the rewrite.
+
+---
+
+## Running JARVIS — Legacy HTTP Stack
+
+JARVIS requires **up to 4 terminal windows** running simultaneously. Start them in this order.
 
 ### Terminal 1 — PC Bridge
 
 ```powershell
-# Open PowerShell in hugginggpt/server/
+cd hugginggpt\server
 $env:BRIDGE_TOKEN   = "my-computer-secret-token"   # must match config.yaml
 $env:BRIDGE_DRY_RUN = "false"                       # "true" to test without real OS changes
 python bridge_server.py --device computer --port 8092
@@ -286,6 +384,67 @@ Or:
 ```
 
 You'll hear: *"JARVIS online. Say 'Hey Jarvis' followed by your command."*
+
+---
+
+## Running JARVIS — Production MQTT Stack (`jarvis_prod`)
+
+The prod stack runs the brain on your PC and a companion agent on the phone. They speak MQTT QoS-1 over Tailscale through a Mosquitto broker.
+
+### Quick start (Windows, one-shot)
+
+```powershell
+cd hugginggpt\server\jarvis_prod
+.\run_jarvis.ps1
+```
+
+The script:
+1. Starts/configures Mosquitto with the password from `$env:JARVIS_PASS`
+2. Launches `brain_pc.py` (with REPL, scheduler, Telegram gateway, Langfuse tracing)
+3. Tails logs to `smoke.log` / `smoke_lf.log` / `smoke_noop.log`
+
+To run the brain headless (no REPL):
+
+```powershell
+python brain_pc.py --no-repl --config ..\configs\config.default.yaml
+```
+
+### Phone-side setup (Termux)
+
+```bash
+# Inside Termux on the phone
+pkg install python termux-api git
+git clone https://github.com/Yash-200608/Jarvis-2.0.git
+cd Jarvis-2.0/hugginggpt/server/jarvis_prod
+pip install -r requirements_phone.txt
+
+export JARVIS_PASS='...'           # same broker password as PC
+export MQTT_HOST='100.x.y.z'       # Tailscale IP of the PC
+bash start_agent.sh
+```
+
+Or for a long-running watchdog, point Tasker at `tasker_watchdog.txt`.
+
+### What the prod stack gives you
+
+- **`brain_pc.py`** — asyncio TaskGroup hosting the MQTT correlator (aiomqtt, QoS-1, session-expiry, LWT presence), REPL + `--no-repl` daemon mode, cron scheduler, Telegram gateway with DM allowlist + pairing, pentagi-style Reflector loop with SQLite-backed fail-streak memory, full Langfuse v4 tracing
+- **`agent_phone.py`** — phone-side companion agent that handles SMS, dial, battery, screenshot, etc. via Termux:API
+- **`scheduler.py`** — full crontab via `croniter` (ranges, names, `L`, `#`, lists, steps)
+- **`jobs.py`** — SQLite `JobLog` with hot-path in-memory counter, hydrated on restart
+- **`protocol.py`** — wire format (`Command` / `Response`, topic helpers, presence payload)
+- **`telegram_gateway.py`** — DM bot with chat-ID allowlist + pairing flow
+- **`_smoke.py`** — end-to-end round-trip test (brain + fake phone)
+- **`run_jarvis.ps1`** — one-shot Windows launcher
+
+### Smoke test
+
+```bash
+cd hugginggpt/server/jarvis_prod
+python _smoke.py
+# Expected: "round-trip OK" — green both with and without LANGFUSE_* env vars
+```
+
+When `LANGFUSE_*` env vars are unset, the tracing path drops to `contextlib.nullcontext` and adds zero overhead.
 
 ---
 
@@ -389,13 +548,13 @@ After saying **"Hey Jarvis"** (or just **"Jarvis"**), speak your command natural
 
 **Google STT** is faster but requires internet. **Whisper** runs fully offline (downloads ~150MB model on first use).
 
-**pyttsx3** is the default TTS — it uses your system's built-in voices. **ElevenLabs** gives much more natural speech (requires an API key set as `ELEVENLABS_API_KEY`).
+**pyttsx3** is the default TTS — it uses your system's built-in voices. **ElevenLabs** gives much more natural speech (requires `$env:ELEVENLABS_API_KEY`).
 
 ---
 
 ## Android Phone Control
 
-Make sure ADB is working first:
+Make sure ADB is working first (legacy stack):
 
 ```bash
 adb devices
@@ -419,7 +578,7 @@ adb devices
 
 | Action | Description |
 |---|---|
-| `send_sms` | Send SMS via Android Messages intent |
+| `send_sms` | Send SMS via Android Messages intent (legacy) / Termux:API (prod) |
 | `send_whatsapp` | Open WhatsApp and pre-fill a message |
 | `make_call` | Dial a phone number |
 | `open_app` | Launch by package name or common name (e.g. "spotify") |
@@ -445,7 +604,7 @@ adb devices
 1. Enable 2-Step Verification on your Google Account
 2. Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
 3. Create an App Password for **Mail / Windows Computer**
-4. Copy the 16-character password into `config.default.yaml → email.password`
+4. Set it as `$env:GMAIL_APP_PASSWORD` (the YAML now reads `${GMAIL_APP_PASSWORD}`)
 
 ### Outlook / Hotmail
 
@@ -456,7 +615,7 @@ email:
   imap_host: outlook.office365.com
   imap_port: 993
   username: you@outlook.com
-  password: your-outlook-password
+  password: ${OUTLOOK_PASSWORD}     # exported in shell, not in YAML
 ```
 
 ### WhatsApp
@@ -474,24 +633,27 @@ Phone numbers must be in international format, e.g. `+14155552671`.
 
 ## Switching LLM Backends
 
-### Claude (default, recommended)
+### Claude (legacy stack default)
 
 ```yaml
 anthropic:
-  api_key: sk-ant-YOUR_KEY
+  api_key: ${ANTHROPIC_API_KEY}
 model: claude-sonnet-4-6    # or claude-opus-4-6, claude-haiku-4-5-20251001
+```
+
+### Groq (prod stack default)
+
+```yaml
+groq:
+  api_key: ${GROQ_API_KEY}
+model: llama-3.3-70b-versatile
 ```
 
 ### OpenAI
 
-Comment out `anthropic:` and uncomment `openai:`:
-
 ```yaml
-# anthropic:
-#   api_key: ...
-
 openai:
-  api_key: sk-YOUR_OPENAI_KEY
+  api_key: ${OPENAI_API_KEY}
 model: gpt-4o
 use_completion: false
 ```
@@ -500,7 +662,7 @@ use_completion: false
 
 ```yaml
 azure:
-  api_key: YOUR_AZURE_KEY
+  api_key: ${AZURE_OPENAI_API_KEY}
   base_url: https://YOUR_RESOURCE.openai.azure.com
   deployment_name: YOUR_DEPLOYMENT
   api_version: "2024-02-01"
@@ -509,37 +671,134 @@ model: gpt-4
 
 ---
 
+## Observability — Langfuse SDK v4
+
+The prod stack ships full end-to-end tracing through Langfuse SDK v4.
+
+### How it's wired
+
+In `brain_pc.py`:
+
+- **`_trace_obs(name, as_type=...)`** wraps `start_as_current_observation()` for span-style observations
+- **`_trace_attrs(...)`** wraps `propagate_attributes()` for attaching session/user metadata to a subtree
+- **`_lf_mask` callback** runs at SDK level for outbound payload scrubbing
+- **Inline `_mask_params()`** runs before observation creation for second-layer PII scrubbing on inputs
+
+Result: dual-layer masking. Phone numbers, message bodies, email contents, and broker passwords never appear in trace data.
+
+### Trace hierarchy
+
+```
+brain.prompt              session=chat_id, user=...
+├── awesome_chat.parse_device_command   as_type="generation"
+│                                       model=llama-3.3-70b-versatile
+└── jarvis.send_command                 (one per round-trip)
+```
+
+### No-op mode
+
+If `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are unset, every `_trace_obs(...)` falls through `contextlib.nullcontext` — zero overhead, zero allocations, zero network calls. The same code path runs whether tracing is on or off.
+
+### Hardened HF status probe
+
+`awesome_chat.get_model_status()` uses a pooled `requests.Session`:
+
+```python
+HTTPAdapter(pool_connections=16, pool_maxsize=32, max_retries=Retry(
+    total=3, backoff_factor=0.5,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset(["GET", "HEAD", "POST"]),
+    raise_on_status=False,
+))
+```
+
+Plus 60s/10s timeouts and a `try/except requests.RequestException` so transient network failures don't crash the probe thread.
+
+---
+
+## Tests
+
+The test suite is portable — heavy-dep modules are gated by `pytest.importorskip(...)` so they skip cleanly when `diffusers`, `flask`, or other optional packages aren't installed.
+
+```bash
+cd hugginggpt/server
+pytest test_jarvis.py -v
+```
+
+**On bare Python 3.12 with no optional deps:** **10 passed, 19 skipped, 0 errored.**
+
+The lazy-load helpers look like:
+
+```python
+def _awesome_chat():
+    pytest.importorskip("diffusers", reason="awesome_chat requires diffusers")
+    pytest.importorskip("flask",     reason="awesome_chat requires flask")
+    import awesome_chat
+    return awesome_chat
+```
+
+---
+
 ## Project Structure
 
 ```
-JARVIS/
+Jarvis-2.0/
 ├── hugginggpt/
 │   └── server/
-│       ├── awesome_chat.py            ← Main JARVIS server (HuggingGPT pipeline)
-│       ├── bridge_server.py           ← PC/email/WhatsApp bridge (port 8092)
-│       ├── phone_bridge.py            ← Android ADB bridge (port 8091)
+│       ├── awesome_chat.py            ← Main JARVIS brain (HuggingGPT pipeline)
+│       ├── bridge_server.py           ← PC/email/WhatsApp bridge (port 8092, legacy)
+│       ├── phone_bridge.py            ← Android ADB bridge (port 8091, legacy)
 │       ├── voice_module.py            ← Voice input/output pipeline
 │       ├── claude_adapter.py          ← Anthropic Claude API adapter
 │       ├── device_integration.py      ← Bridge HTTP client (used by awesome_chat)
 │       ├── models_server.py           ← Local HuggingFace model server
-│       ├── get_token_ids.py           ← Tokenizer utilities
+│       ├── test_jarvis.py             ← Portable test suite (importorskip-gated)
+│       │
+│       ├── jarvis_prod/               ← ⭐ Production MQTT stack
+│       │   ├── brain_pc.py            ← MQTT correlator + REPL + Telegram + Reflector + Langfuse
+│       │   ├── agent_phone.py         ← Phone-side Termux agent
+│       │   ├── scheduler.py           ← croniter-based cron
+│       │   ├── jobs.py                ← SQLite JobLog
+│       │   ├── protocol.py            ← Wire format (Command / Response / presence)
+│       │   ├── telegram_gateway.py    ← DM allowlist + pairing
+│       │   ├── _smoke.py              ← End-to-end round-trip test
+│       │   ├── run_jarvis.ps1         ← One-shot Windows launcher
+│       │   ├── start_agent.sh         ← Termux phone agent launcher
+│       │   ├── tasker_watchdog.txt    ← Tasker watchdog config
+│       │   ├── mosquitto.conf.example ← Mosquitto broker template
+│       │   ├── schedule.example.json  ← Example cron schedule
+│       │   ├── requirements_pc.txt    ← PC-side deps (asyncio.TaskGroup, etc.)
+│       │   └── requirements_phone.txt ← Termux deps
+│       │
 │       ├── configs/
-│       │   ├── config.default.yaml    ← ⭐ Main config file (edit this)
-│       │   ├── config.azure.yaml      ← Azure OpenAI config template
+│       │   ├── config.default.yaml    ← ⭐ Main config (uses ${VAR} env-var references)
+│       │   ├── config.azure.yaml      ← Azure OpenAI template
 │       │   ├── config.gradio.yaml     ← Gradio web UI config
 │       │   └── config.lite.yaml       ← Lightweight / HuggingFace-only config
 │       ├── demos/                     ← Few-shot examples for Claude/GPT
 │       ├── data/
 │       │   └── p0_models.jsonl        ← HuggingFace model registry
-│       ├── run_computer_bridge.ps1    ← Launch PC bridge (PowerShell)
-│       ├── run_phone_bridge.ps1       ← Launch phone bridge (PowerShell)
-│       ├── run_voice.ps1              ← Launch voice module (PowerShell)
-│       └── requirements_jarvis.txt    ← Python dependencies
+│       ├── run_computer_bridge.ps1    ← Launch PC bridge (legacy)
+│       ├── run_phone_bridge.ps1       ← Launch phone bridge (legacy)
+│       ├── run_voice.ps1              ← Launch voice module
+│       ├── run_jarvis.ps1             ← Launch jarvis_prod brain
+│       ├── requirements.txt           ← Original HuggingGPT deps
+│       └── requirements_jarvis.txt    ← JARVIS extension deps
 │
 ├── easytool/                          ← EasyTool benchmark module
 ├── taskbench/                         ← TaskBench evaluation module
 └── README.md                          ← You are here
 ```
+
+---
+
+## Security
+
+- **No secrets in YAML.** Every credential reference in `config.default.yaml` is a `${VAR}` placeholder. The recursive `_expand_env_vars()` helper resolves them at config-load time.
+- **No `git add .`.** Every staged path in this repo's commits was explicit. Safer than blanket adds — picks up tracked deletes too without sweeping in `.env` / `__pycache__` / venv binaries.
+- **History was rewritten** to purge three live secrets that landed in earlier commits (Gmail App Password, ElevenLabs API key, an upstream GitHub PAT in `easytool/data_toolbench/tool_instruction/toolbench_tool_instruction.json`). The rewrite was via `git filter-repo --replace-text`. Force-pushed to both the new origin and the old `jarvis-old` remote.
+- **Rotate anyway.** The leaked credentials were public for a few hours before the rewrite. Treat them as compromised.
+- **Tree-wide scanner clean** in HEAD: no `gsk_/hf_/sk-ant-/sk-/sk_/ghp_/gho_/4n5mZiaN/225588` matches outside redaction comments.
 
 ---
 
@@ -580,11 +839,26 @@ pipwin install pyaudio
 
 ### Claude API key errors
 - Ensure the key starts with `sk-ant-`
-- Check it's set in `config.default.yaml` or exported as `ANTHROPIC_API_KEY`
-- Make sure `anthropic:` section is **not commented out** in the config file
+- Check `$env:ANTHROPIC_API_KEY` is set in the same shell launching `awesome_chat.py`
+- Make sure the `anthropic:` section in YAML references `${ANTHROPIC_API_KEY}` (or whatever var you exported)
 
 ### Bridge server returns `{"ok": false, "error": "Unauthorized"}`
 - The `BRIDGE_TOKEN` in your `.ps1` script must **exactly** match the `token:` in `config.default.yaml`
+
+### `${VAR}` shows up literal in logs / SMTP-AUTH fails
+- The shell that launched the server didn't have the env var exported
+- Re-export and restart the server (config is read once at startup)
+- Verify with: `python -c "import os; print(os.path.expandvars('${GMAIL_APP_PASSWORD}'))"`
+
+### MQTT broker connection refused (`jarvis_prod`)
+- Confirm Mosquitto is running: `Get-Service mosquitto` (Windows) or `systemctl status mosquitto`
+- `$env:JARVIS_PASS` must match the broker's password file
+- Tailscale must be up on **both** PC and phone — verify with `tailscale status`
+
+### Langfuse traces not appearing
+- Check `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` are all set
+- The first `_trace_obs(...)` call lazily initializes the SDK — give it a few seconds
+- If `LANGFUSE_HOST` is self-hosted, check it's reachable from the brain's network namespace
 
 ### PyAutoGUI FailSafeException
 PyAutoGUI is configured to abort if the mouse reaches a corner of the screen (a safety feature). Move the mouse away from the corner and retry.
@@ -598,22 +872,25 @@ Pull requests are welcome. For large changes, please open an issue first.
 ### Development setup
 
 ```bash
-git clone https://github.com/your-username/JARVIS.git
-cd JARVIS
+git clone https://github.com/Yash-200608/Jarvis-2.0.git
+cd Jarvis-2.0
 python -m venv venv && source venv/bin/activate   # or venv\Scripts\activate on Windows
 pip install -r hugginggpt/server/requirements_jarvis.txt
 ```
 
-### Adding a new device action
+### Adding a new device action (legacy stack)
 
 1. Open `hugginggpt/server/bridge_server.py`
 2. Add a new `if action == "your_action":` block in the `execute()` function
 3. Follow the existing pattern: validate params → execute → return `jsonify(base)`
 4. Test with `BRIDGE_DRY_RUN=true` first
 
-### Adding a new phone action
+### Adding a new device action (prod stack)
 
-Same pattern in `hugginggpt/server/phone_bridge.py`.
+1. Open `hugginggpt/server/jarvis_prod/agent_phone.py` (or `brain_pc.py` for PC-side actions)
+2. Add the handler in the dispatch table
+3. Update `protocol.py` if you're introducing a new `Command` shape
+4. Run `python _smoke.py` to verify the round-trip
 
 ### Reporting issues
 
@@ -621,7 +898,7 @@ Please include:
 - OS version
 - Python version (`python --version`)
 - Full error traceback
-- Which bridge server was running
+- Which stack (legacy or `jarvis_prod`) and which component (bridge / brain / phone agent)
 
 ---
 
@@ -629,7 +906,13 @@ Please include:
 
 This project builds on top of:
 - [JARVIS / HuggingGPT](https://github.com/microsoft/JARVIS) by Microsoft Research
-- [Anthropic Claude](https://www.anthropic.com) as the AI reasoning engine
+- [Anthropic Claude](https://www.anthropic.com) — reasoning brain (legacy stack)
+- [Groq](https://groq.com) — `llama-3.3-70b-versatile` for device-command parsing (prod stack)
+- [Langfuse](https://langfuse.com) — end-to-end observability via SDK v4
+- [aiomqtt](https://github.com/sbtinstruments/aiomqtt) — async MQTT for the prod stack
+- [croniter](https://github.com/kiorky/croniter) — full crontab parsing for the scheduler
+- [pentagi](https://github.com/vxcontrol/pentagi) — inspiration for the Reflector loop
+- [Tailscale](https://tailscale.com) — encrypted overlay network for phone↔PC
 - [EasyTool](https://arxiv.org/abs/2401.06201) — tool learning benchmark
 - [TaskBench](https://arxiv.org/abs/2311.18760) — task automation benchmark
 

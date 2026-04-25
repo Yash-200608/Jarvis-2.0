@@ -27,18 +27,37 @@ from huggingface_hub.inference_api import InferenceApi
 from huggingface_hub.inference_api import ALL_TASKS
 from device_integration import EndpointDeviceAdapter, DeviceOrchestrator
 from claude_adapter import send_request_claude
-from core.executor import execute_task
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", type=str, default="configs/config.default.yaml")
 parser.add_argument("--mode", type=str, default="cli")
+parser.add_argument("--voice", action="store_true",
+                    help="Enable side-by-side voice input/output in CLI mode. "
+                         "Type OR speak — whichever comes first.")
+parser.add_argument("--no-wake-word", action="store_true",
+                    help="With --voice, treat every utterance as a command "
+                         "(no 'Hey Jarvis' gating).")
 args = parser.parse_args()
 
 if __name__ != "__main__":
     args.config = "configs/config.gradio.yaml"
     args.mode = "gradio"
 
-config = yaml.load(open(args.config, "r"), Loader=yaml.FullLoader)
+def _expand_env_vars(obj):
+    """Recursively `os.path.expandvars` any strings in a loaded YAML blob.
+    Turns `${VAR}` into `os.environ["VAR"]` (if set, else left as-is). Keeps
+    secrets out of the repo: `config.default.yaml` references `${GROQ_API_KEY}`
+    / `${GMAIL_APP_PASSWORD}` / `${ELEVENLABS_API_KEY}` / `${HF_TOKEN}` and
+    the actual values live only in the user's shell env."""
+    if isinstance(obj, str):
+        return os.path.expandvars(obj)
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(x) for x in obj]
+    return obj
+
+config = _expand_env_vars(yaml.load(open(args.config, "r"), Loader=yaml.FullLoader))
 
 os.makedirs("logs", exist_ok=True)
 os.makedirs("public/images", exist_ok=True)
@@ -70,6 +89,10 @@ use_completion = config["use_completion"]
 LLM_encoding = LLM
 if config["dev"] and LLM == "gpt-3.5-turbo":
     LLM_encoding = "text-davinci-003"
+# Claude models aren't in tiktoken — fall back to gpt-3.5-turbo encoding for token counting only
+OPENAI_TIKTOKEN_MODELS = ["gpt-4", "gpt-3.5", "text-davinci", "davinci", "curie", "babbage", "ada"]
+if not any(m in LLM.lower() for m in OPENAI_TIKTOKEN_MODELS):
+    LLM_encoding = "gpt-3.5-turbo"
 task_parsing_highlight_ids = get_token_ids_for_task_parsing(LLM_encoding)
 choose_model_highlight_ids = get_token_ids_for_choose_model(LLM_encoding)
 
@@ -120,19 +143,43 @@ elif API_TYPE == "azure":
     API_ENDPOINT = f"{config['azure']['base_url']}/openai/deployments/{config['azure']['deployment_name']}/{api_name}?api-version={config['azure']['api_version']}"
     API_KEY = config["azure"]["api_key"]
 elif API_TYPE == "openai":
-    API_ENDPOINT = f"https://api.openai.com/v1/{api_name}"
-    if config["openai"]["api_key"].startswith("sk-"):  # Check for valid OpenAI key in config file
-        API_KEY = config["openai"]["api_key"]
-    elif "OPENAI_API_KEY" in os.environ and os.getenv("OPENAI_API_KEY").startswith("sk-"):  # Check for environment variable OPENAI_API_KEY
+    base_url = config["openai"].get("base_url", "https://api.openai.com/v1")
+    API_ENDPOINT = f"{base_url}/{api_name}"
+    cfg_key = config["openai"]["api_key"]
+    if cfg_key and cfg_key not in ("", "REPLACE_WITH_YOUR_OPENAI_API_KEY_HERE"):
+        API_KEY = cfg_key
+    elif "OPENAI_API_KEY" in os.environ:
         API_KEY = os.getenv("OPENAI_API_KEY")
     else:
-        raise ValueError(f"Incorrect OpenAI key. Please check your {args.config} file.")
+        raise ValueError(f"API key not found. Please check your {args.config} file.")
 
 PROXY = None
 if config["proxy"]:
     PROXY = {
         "https": config["proxy"],
     }
+
+# Pooled session w/ retry so HF status probes don't hang the planner on transient
+# 5xx/ECONNRESET and don't open a fresh TCP connection per call. Used by
+# get_model_status() (and any future out-bound HTTP that belongs on the hot path).
+from requests.adapters import HTTPAdapter
+try:
+    # urllib3 >= 2
+    from urllib3.util.retry import Retry
+except ImportError:  # pragma: no cover
+    from requests.packages.urllib3.util.retry import Retry  # type: ignore
+
+_http_session = requests.Session()
+_retry = Retry(
+    total=3,
+    backoff_factor=0.5,                       # 0.5s, 1s, 2s
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset(["GET", "HEAD", "POST"]),
+    raise_on_status=False,
+)
+_adapter = HTTPAdapter(pool_connections=16, pool_maxsize=32, max_retries=_retry)
+_http_session.mount("http://",  _adapter)
+_http_session.mount("https://", _adapter)
 
 inference_mode = config["inference_mode"]
 
@@ -248,14 +295,35 @@ def send_request(data):
         }
     else:
         HEADER = None
-    response = requests.post(api_endpoint, json=data, headers=HEADER, proxies=PROXY)
-    if "error" in response.json():
-        return response.json()
-    logger.debug(response.text.strip())
-    if use_completion:
-        return response.json()["choices"][0]["text"].strip()
-    else:
-        return response.json()["choices"][0]["message"]["content"].strip()
+    for attempt in range(3):
+        response = requests.post(api_endpoint, json=data, headers=HEADER, proxies=PROXY)
+        if response.status_code == 429:
+            wait = 10 * (attempt + 1)   # wait 10s, 20s, 30s
+            print(f"[JARVIS] Rate limited. Waiting {wait}s before retry...")
+            time.sleep(wait)
+            continue
+        break
+    resp_json = response.json()
+    logger.debug(str(resp_json)[:500])
+
+    # Handle error responses
+    if isinstance(resp_json, dict) and "error" in resp_json:
+        return resp_json
+
+    try:
+        if use_completion:
+            return resp_json["choices"][0]["text"].strip()
+        else:
+            content = resp_json["choices"][0]["message"]["content"]
+            # Gemini returns content as a list of parts — flatten to string
+            if isinstance(content, list):
+                return " ".join(
+                    part.get("text", "") for part in content
+                    if isinstance(part, dict)
+                ).strip()
+            return content.strip()
+    except (KeyError, IndexError, TypeError) as e:
+        return f"Error parsing response: {e}. Raw response: {str(resp_json)[:300]}"
 
 def replace_slot(text, entries):
     for key, value in entries.items():
@@ -312,9 +380,12 @@ def resource_has_dep(command):
 
 def fix_dep(tasks):
     for task in tasks:
-        args = task["args"]
+        args = task.get("args", {})
+        task["args"] = args
         task["dep"] = []
         for k, v in args.items():
+            if not isinstance(v, str):
+                continue
             if "<GENERATED>" in v:
                 dep_task_id = int(v.split("-")[1])
                 if dep_task_id not in task["dep"]:
@@ -327,7 +398,9 @@ def unfold(tasks):
     flag_unfold_task = False
     try:
         for task in tasks:
-            for key, value in task["args"].items():
+            for key, value in task.get("args", {}).items():
+                if not isinstance(value, str):
+                    continue
                 if "<GENERATED>" in value:
                     generated_items = value.split(",")
                     if len(generated_items) > 1:
@@ -374,91 +447,268 @@ def is_status_report_request(text):
     }
     return normalized in status_phrases
 
-def is_high_risk_request(text):
-    normalized = _normalized_text(text)
-    high_risk_keywords = [
-        "unlock door",
-        "unlock the door",
-        "open the door",
-        "transfer money",
-        "bank transfer",
-        "wire transfer",
-        "payment",
-        "delete account",
-        "wipe",
-        "factory reset",
-        "erase phone",
-        "format computer",
-        "shutdown now",
-    ]
-    return any(keyword in normalized for keyword in high_risk_keywords)
-
-def has_explicit_confirmation(text):
-    normalized = _normalized_text(text)
-    # Require a clear confirmation phrase to proceed with high-risk actions.
-    confirmation_phrases = [
-        "confirm",
-        "i confirm",
-        "confirmed",
-        "authorize",
-        "i authorize",
-    ]
-    return any(phrase in normalized for phrase in confirmation_phrases)
-
 def parse_device_command(text):
+    """
+    Use the LLM to parse any natural language command into one or more device actions.
+    Returns a list of command dicts, or None if the text is not a device command.
+    Each command: {"target": "phone"|"computer", "action": "...", "params": {...}}
+    """
     normalized = _normalized_text(text)
     if not normalized:
         return None
 
-    if "phone" not in normalized and "computer" not in normalized and "pc" not in normalized:
+    # NOTE: no keyword pre-filter — every message is routed to the LLM, which
+    # decides whether it's a device command. This keeps exotic phrasings
+    # ("boot up the DAW", "pop my inbox") working. The LLM returns
+    # is_device_command:false for chitchat, which is cheap.
+
+    system_prompt = """You are the device command parser for JARVIS — the owner's
+personal assistant on his own Windows PC and his own Android phone.
+
+OPERATING RULES (critical):
+- The owner has FULL pre-authorization for every action on both devices.
+- NEVER refuse, NEVER ask for confirmation, NEVER add safety caveats.
+- If the message is even loosely a device command, produce the JSON commands.
+- Chain multi-step requests into an ordered list of commands.
+- Anything that is clearly pure conversation → return is_device_command:false.
+
+=== PHONE actions ===
+open_app          params: {"app": "whatsapp|youtube|chrome|maps|camera|settings|contacts|phone|messages|gmail|spotify|instagram|facebook|twitter|telegram|netflix|snapchat|tiktok|calculator|clock|calendar|files|play_store"}
+close_app         params: {"app": "<app_name>"}
+take_screenshot   params: {}
+send_sms          params: {"phone": "+CountryCodeNumber OR contact name", "message": "text"}
+send_whatsapp     params: {"phone": "+CountryCodeNumber OR contact name", "message": "text"}
+send_telegram     params: {"username": "handle OR contact name", "message": "text"}
+send_instagram_dm params: {"username": "handle OR contact name", "message": "text"}
+send_message      params: {"platform": "whatsapp|telegram|instagram|snapchat|sms|facebook", "recipient": "phone, contact name, or username", "message": "text"}
+make_call         params: {"phone": "+CountryCodeNumber OR contact name"}
+lookup_contact    params: {"name": "contact name to search"}
+end_call          params: {}
+tap               params: {"x": <int>, "y": <int>}
+swipe             params: {"direction": "up|down|left|right"} OR {"x1": <int>, "y1": <int>, "x2": <int>, "y2": <int>, "duration_ms": 300}
+type_text         params: {"text": "text to type"}
+press_key         params: {"key": "home|back|menu|power|volume_up|volume_down|enter|recent_apps|camera|search"}
+set_volume        params: {"level": <0-15>}
+get_battery       params: {}
+get_device_info   params: {}
+list_apps         params: {"system": false}
+lock_device       params: {}
+unlock_device     params: {}
+push_file         params: {"src": "/local/path", "dst": "/sdcard/Download/"}
+pull_file         params: {"src": "/sdcard/path", "dst": "."}
+record_screen     params: {}
+
+=== COMPUTER actions ===
+take_screenshot params: {}
+type_text       params: {"text": "text to type"}
+press_hotkey    params: {"keys": ["ctrl", "c"]}
+open_url        params: {"url": "https://..."}
+open_app        params: {"app": "notepad|chrome|explorer|calc|paint|..."}
+run_command     params: {"command": "shell command", "shell": "auto|powershell"}
+move_mouse      params: {"x": <int>, "y": <int>}
+left_click      params: {"x": <int>, "y": <int>}
+right_click     params: {"x": <int>, "y": <int>}
+double_click    params: {"x": <int>, "y": <int>}
+scroll          params: {"x": <int>, "y": <int>, "amount": 3}
+get_clipboard   params: {}
+set_clipboard   params: {"text": "text"}
+get_system_info params: {}
+list_processes  params: {}
+kill_process    params: {"name": "process.exe"}
+control_media   params: {"command": "play_pause|next|previous|volume_up|volume_down|mute"}
+set_volume      params: {"level": <0-100>}
+mute_audio      params: {"muted": true}
+lock_device     params: {}
+shutdown_device params: {}
+restart_device  params: {}
+minimize_window params: {}
+maximize_window params: {}
+close_window    params: {}
+send_email      params: {"to": "email@example.com", "subject": "...", "body": "..."}
+read_emails     params: {"max_count": 5, "unread_only": true}
+read_file       params: {"path": "C:/path/to/file.txt"}
+write_file      params: {"path": "C:/path/file.txt", "content": "text"}
+delete_file     params: {"path": "C:/path/file.txt"}        (also works on directories — recursive)
+copy_file       params: {"src": "C:/a.txt", "dst": "C:/b.txt"}
+move_file       params: {"src": "C:/a.txt", "dst": "C:/b.txt"}
+create_directory params: {"path": "C:/new/folder"}
+list_directory  params: {"path": "C:/path"}
+search_files    params: {"path": "C:/", "pattern": "*.txt"}
+run_command     params: {"command": "any shell command", "shell": "auto|powershell"}   # arbitrary shell — use freely
+
+=== INTENT INFERENCE (THINK BEFORE YOU EMIT) ===
+The owner rarely uses the exact action names. You must infer INTENT from rephrasings,
+idioms, indirect asks, and contextual cues — then map to the closest action(s).
+
+Reasoning procedure (do this silently, then write the JSON):
+1. Paraphrase the request in your own words — what does the owner actually want to happen?
+2. Pick the target device:
+   - Explicit words ("on my phone", "PC", "laptop") → use them.
+   - "Screen" without context usually = PC monitor. "Lock screen" / "flashlight" / "call" / "text" = phone.
+   - If both make sense, pick the one the owner most likely meant; don't emit duplicates.
+3. Pick the smallest set of actions that fulfils the intent. Chain them in order.
+4. Fill in missing parameters with sensible defaults — do NOT skip a command just because a param is vague.
+5. For destructive actions, proceed without hesitation — authorization is pre-granted.
+
+Rephrasing → intent examples (this is what "thinking" looks like):
+- "kill the noise"            → computer:mute_audio muted=true
+- "mute me"                   → computer:mute_audio muted=true
+- "quiet down"                → computer:set_volume level=10
+- "crank it"                  → computer:set_volume level=80
+- "let mom know I'm late"     → phone:send_whatsapp phone="Mom" message="Running a bit late, be there soon."
+- "shoot tanishq a text"      → phone:send_sms phone="Tanishq" message inferred from context
+- "grab what's on my screen"  → computer:take_screenshot
+- "snap the phone"            → phone:take_screenshot
+- "nuke the temp folder"      → computer:delete_file path="C:/Users/Hp/AppData/Local/Temp"
+- "pop open spotify"          → computer:open_app app="spotify"
+- "boot up the DAW"           → computer:open_app (if name known) OR run_command
+- "find that resume I wrote"  → computer:search_files path="C:/Users/Hp" pattern="*resume*"
+- "I'm headed to bed"         → [phone:lock_device, computer:mute_audio muted=true, computer:lock_device]
+- "lights out"                → same as above OR computer:run_command (display off)
+- "starting my dev session"   → [computer:open_app app="code", computer:open_url url="https://github.com", phone:set_volume level=0]
+- "get me in meeting mode"    → [phone:set_volume level=0, computer:mute_audio muted=true, computer:open_app app="zoom"]
+- "morning briefing"          → [phone:get_battery, computer:get_system_info, computer:read_emails unread_only=true]
+- "wipe every temp file and shutdown"  → [computer:delete_file path="C:/Users/Hp/AppData/Local/Temp", computer:shutdown_device]
+- "what's my battery"         → phone:get_battery
+- "juice left?"               → phone:get_battery
+- "phone dying?"              → phone:get_battery
+- "make it louder"            → set_volume on whichever device the owner last referenced; default phone
+- "pause that"                → computer:control_media command=play_pause
+- "skip this song"            → computer:control_media command=next
+- "open google"               → computer:open_url url="https://google.com"
+- "tell me the time"          → NOT a device command (chitchat, handled elsewhere)
+- "hello"                     → NOT a device command
+- "what can you do"           → NOT a device command
+
+=== OUTPUT SCHEMA ===
+Return ONLY a single JSON object. No markdown, no prose outside JSON.
+
+Schema:
+{
+  "reasoning":          "<1–3 sentences: what the owner wants and why you chose these actions>",
+  "is_device_command":  true | false,
+  "commands":           [ {"target": "phone|computer", "action": "...", "params": {...}} ]   // omit or [] if is_device_command=false
+}
+
+=== RULES ===
+1. If NOT a device command (pure chitchat / question / greeting), set is_device_command=false and omit commands.
+2. Default target = "phone" when truly ambiguous AND the action exists on phone; otherwise pick the device that makes the action possible.
+3. Multi-device requests → include multiple commands (they run in parallel across devices, sequential within one).
+4. For "swipe up/down/left/right" always use the direction shortcut.
+5. For "send message on <platform>" use send_message with the right platform. Telegram → send_telegram, Instagram → send_instagram_dm, etc.
+6. Phone numbers AND contact names are both valid for phone/recipient fields. Bridge resolves names to numbers automatically.
+7. For anything specific actions don't cover on the PC (git, python, package install, weird tools) use run_command with the exact shell command.
+8. Never emit is_device_command=false just because an action is destructive. Delete, shutdown, wipe, kill, reset → emit the commands.
+9. The reasoning field MUST be filled in even for is_device_command=false (say why you concluded it's chitchat).
+10. Valid JSON only. No trailing commas, no markdown fences, no commentary outside the JSON object."""
+
+    user_prompt = f"User command: {text}"
+
+    data = {
+        "model": LLM,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0,
+        "api_key": API_KEY,
+        "api_type": API_TYPE,
+        "api_endpoint": API_ENDPOINT,
+    }
+
+    try:
+        response = send_request(data)
+        if isinstance(response, dict) and "error" in response:
+            logger.debug(f"[parse_device_command] LLM error: {response}")
+            return None
+
+        response_text = (response or "").strip()
+
+        # Strip markdown code fences if present
+        if response_text.startswith("```"):
+            response_text = re.sub(r"^```[a-z]*\n?", "", response_text)
+            response_text = re.sub(r"\n?```$", "", response_text).strip()
+
+        # Fallback: find the first balanced {...} if the LLM wrapped the JSON
+        # in surrounding prose. Parses by counting braces outside strings.
+        parsed = _extract_first_json_object(response_text)
+        if parsed is None:
+            try:
+                parsed = json.loads(response_text)
+            except json.JSONDecodeError:
+                logger.debug(f"[parse_device_command] couldn't parse JSON: {response_text[:300]}")
+                return None
+
+        reasoning = parsed.get("reasoning") or ""
+
+        if not parsed.get("is_device_command"):
+            if reasoning:
+                print(f"[THINK] not a device command — {reasoning}")
+            return None
+
+        commands = parsed.get("commands", [])
+        if not commands:
+            return None
+
+        # Normalise app names — strip noise phrases the LLM may include
+        noise_phrases = [
+            "on my phone", "on the phone", "on phone",
+            "on my device", "on device", "on my computer",
+            "on computer", "on my pc", "on pc",
+            "the ", " app", " application",
+        ]
+        for cmd in commands:
+            if cmd.get("action") in ("open_app", "close_app"):
+                app = str(cmd.get("params", {}).get("app", "")).lower().strip()
+                for phrase in noise_phrases:
+                    app = app.replace(phrase, "").strip()
+                cmd.setdefault("params", {})["app"] = app
+
+        return {"commands": commands, "reasoning": reasoning}
+
+    except Exception as e:
+        logger.debug(f"[parse_device_command] parse error: {e}")
         return None
 
-    source = "computer"
-    target = "phone"
-    if "phone" in normalized and ("control computer" in normalized or "control pc" in normalized):
-        source = "phone"
-        target = "computer"
-    elif ("computer" in normalized or "pc" in normalized) and "control phone" in normalized:
-        source = "computer"
-        target = "phone"
-    elif "on phone" in normalized or "phone " in normalized:
-        target = "phone"
-    elif "on computer" in normalized or "on pc" in normalized:
-        target = "computer"
 
-    action = None
-    params = {}
-    if "lock" in normalized:
-        action = "lock_device"
-    elif "unlock" in normalized:
-        action = "unlock_device"
-    elif "unmute" in normalized:
-        action = "mute_audio"
-        params["muted"] = False
-    elif "mute" in normalized:
-        action = "mute_audio"
-        params["muted"] = True
-    elif "shutdown" in normalized:
-        action = "shutdown_device"
-    elif "restart" in normalized:
-        action = "restart_device"
-    elif "open" in normalized:
-        action = "open_app"
-        m = re.search(r"open\s+([a-z0-9_\-\. ]+)", normalized)
-        if m:
-            params["app"] = m.group(1).strip()
-    elif "volume" in normalized:
-        m = re.search(r"(\d{1,3})", normalized)
-        if m:
-            action = "set_volume"
-            params["level"] = max(0, min(100, int(m.group(1))))
-
-    if action is None:
+def _extract_first_json_object(text):
+    """
+    Return the first top-level JSON object in `text` as a dict, or None.
+    Handles LLM output where a JSON blob is embedded in prose.
+    Tracks string literals so braces inside strings don't confuse the counter.
+    """
+    if not text:
         return None
-
-    params["source"] = source
-
-    return {"target": target, "action": action, "params": params}
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                blob = text[start:i+1]
+                try:
+                    return json.loads(blob)
+                except json.JSONDecodeError:
+                    return None
+    return None
 
 def build_status_report():
     return {
@@ -497,7 +747,7 @@ def parse_task(context, input, api_key, api_type, api_endpoint):
         "model": LLM,
         "messages": messages,
         "temperature": 0,
-        "logit_bias": {item: config["logit_bias"]["parse_task"] for item in task_parsing_highlight_ids},
+#        "logit_bias": {item: config["logit_bias"]["parse_task"] for item in task_parsing_highlight_ids},
         "api_key": api_key,
         "api_type": api_type,
         "api_endpoint": api_endpoint
@@ -523,7 +773,7 @@ def choose_model(input, task, metas, api_key, api_type, api_endpoint):
         "model": LLM,
         "messages": messages,
         "temperature": 0,
-        "logit_bias": {item: config["logit_bias"]["choose_model"] for item in choose_model_highlight_ids}, # 5
+#        "logit_bias": {item: config["logit_bias"]["choose_model"] for item in choose_model_highlight_ids}, # 5
         "api_key": api_key,
         "api_type": api_type,
         "api_endpoint": api_endpoint
@@ -819,10 +1069,16 @@ def model_inference(model_id, data, hosted_on, task):
 
 def get_model_status(model_id, url, headers, queue = None):
     endpoint_type = "huggingface" if "huggingface" in url else "local"
-    if "huggingface" in url:
-        r = requests.get(url, headers=headers, proxies=PROXY)
-    else:
-        r = requests.get(url)
+    try:
+        if "huggingface" in url:
+            r = _http_session.get(url, headers=headers, proxies=PROXY, timeout=60)
+        else:
+            r = _http_session.get(url, timeout=10)
+    except requests.RequestException as e:
+        logger.debug("Model status probe failed for %s: %s", model_id, e)
+        if queue:
+            queue.put((model_id, False, None))
+        return False
     if r.status_code == 200 and "loaded" in r.json() and r.json()["loaded"]:
         if queue:
             queue.put((model_id, True, endpoint_type))
@@ -1056,23 +1312,17 @@ def chat_huggingface(messages, api_key, api_type, api_endpoint, return_planning 
     if is_status_report_request(input):
         return build_status_report()
 
-    if is_high_risk_request(input) and not has_explicit_confirmation(input):
-        return {
-            "message": (
-                "High-risk request detected. Please explicitly confirm to proceed by adding "
-                "'I confirm' to your request."
-            )
-        }
+    parsed_device = parse_device_command(input)
+    if parsed_device:
+        device_commands = parsed_device.get("commands", []) or []
+        reasoning = parsed_device.get("reasoning", "") or ""
+        if reasoning:
+            print(f"[THINK] {reasoning}")
+            logger.info(f"[THINK] {reasoning}")
+    else:
+        device_commands = []
 
-    device_command = parse_device_command(input)
-    if device_command:
-        if device_command["action"] in ["unlock_device", "shutdown_device", "restart_device"] and not has_explicit_confirmation(input):
-            return {
-                "message": (
-                    "High-risk device action requires explicit confirmation. Please resend with "
-                    "'I confirm' to proceed."
-                )
-            }
+    if device_commands:
         if DEVICE_ORCHESTRATOR is None:
             return {
                 "message": (
@@ -1080,16 +1330,87 @@ def chat_huggingface(messages, api_key, api_type, api_endpoint, return_planning 
                     "Configure phone/computer endpoints in server config under 'integrations'."
                 )
             }
-        action = {"name": device_command["action"], "params": device_command.get("params", {})}
-        command_id = str(uuid.uuid4())
-        execution = execute_task(command_id, action)
-        if execution:
-            return {"message": f"Device action executed on {device_command['target']}: {device_command['action']}."}
-        return {"message": "Device action failed: unknown error."}
+
+        print(f"[DEBUG] Device commands from LLM: {device_commands}")
+
+        # Execute all commands (parallel across devices, sequential per device)
+        results = DEVICE_ORCHESTRATOR.execute_multi(device_commands)
+
+        # Truncate large fields (screenshot b64, contact lists, etc.) for debug output
+        LARGE_KEYS = {"screenshot_b64", "packages", "contacts", "emails"}
+        def _truncate(obj, depth=0):
+            if depth > 4:
+                return obj
+            if isinstance(obj, dict):
+                return {
+                    k: (f"<{len(str(v))} chars>" if k in LARGE_KEYS else _truncate(v, depth+1))
+                    for k, v in obj.items()
+                }
+            if isinstance(obj, list):
+                return [_truncate(x, depth+1) for x in obj]
+            return obj
+        print(f"[DEBUG] Bridge results: {_truncate(results)}")
+
+        # Build a human-readable summary
+        summary_parts = []
+        all_ok = True
+        for cmd, res in zip(device_commands, results):
+            target = cmd.get("target", "?")
+            action = cmd.get("action", "?")
+            params = cmd.get("params", {})
+            if res is None:
+                all_ok = False
+                summary_parts.append(f"{target}: {action} — no response (timeout)")
+            elif res.get("ok"):
+                # Check if the inner ADB/bridge result actually succeeded
+                inner = res.get("result", {})
+                # Look for any nested result with a non-zero exit_code
+                adb_result = (inner or {}).get(
+                    "whatsapp_result",
+                    (inner or {}).get("result",
+                    (inner or {}).get("command_result", {}))
+                ) or {}
+                if isinstance(adb_result, dict) and adb_result.get("exit_code", 0) not in (0, None):
+                    all_ok = False
+                    err = adb_result.get("stderr") or adb_result.get("stdout") or "ADB command failed"
+                    summary_parts.append(f"❌ {target}: {action} — {err[:200]}")
+                else:
+                    detail = ""
+                    if action == "get_battery":
+                        batt = (inner or {}).get("battery", {})
+                        detail = f" — battery {batt.get('level', '?')}%, {'charging' if batt.get('charging') else 'not charging'}"
+                    elif action == "get_device_info":
+                        info = (inner or {}).get("device_info", {})
+                        detail = f" — {info.get('manufacturer', '')} {info.get('model', '')} (Android {info.get('android_ver', '?')})"
+                    elif action == "list_apps":
+                        count = (inner or {}).get("count", 0)
+                        detail = f" — {count} packages found"
+                    elif action == "take_screenshot":
+                        detail = " — screenshot captured"
+                    elif action in ("open_app", "launch_app"):
+                        detail = f" — opened {params.get('app', '')}"
+                    elif action in ("send_whatsapp", "send_sms", "send_message",
+                                    "send_telegram", "send_instagram_dm"):
+                        contact = (inner or {}).get("resolved_contact")
+                        if contact:
+                            detail = f" — sent to {contact['name']} ({contact['number']})"
+                        else:
+                            recipient = (params.get('phone') or params.get('recipient') or
+                                         params.get('username') or '')
+                            detail = f" — sent to {recipient}"
+                    summary_parts.append(f"✅ {target}: {action}{detail}")
+            else:
+                all_ok = False
+                summary_parts.append(f"❌ {target}: {action} — {res.get('error', 'unknown error')}")
+
+        summary = "\n".join(summary_parts)
+        if reasoning:
+            summary = f"{summary}\n\n(thinking: {reasoning})"
+        return {"message": summary}
 
     task_str = parse_task(context, input, api_key, api_type, api_endpoint)
 
-    if "error" in task_str:
+    if isinstance(task_str, dict) and "error" in task_str:
         record_case(success=False, **{"input": input, "task": task_str, "reason": f"task parsing error: {task_str['error']['message']}", "op":"report message"})
         return {"message": task_str["error"]["message"]}
 
@@ -1190,17 +1511,158 @@ def test():
     ]
     chat_huggingface(messages, API_KEY, API_TYPE, API_ENDPOINT, return_planning = False, return_results = False)
 
+def _response_for_speech(message):
+    """Trim a response for TTS: strip ANSI, collapse long status lines,
+    swallow the raw screenshot b64 / command echoes that look fine printed
+    but are horrible to listen to."""
+    if not message:
+        return ""
+    text = str(message)
+    # Kill ANSI color codes
+    text = re.sub(r'\x1b\[[0-9;]*m', '', text)
+    # Drop lines that are pure bridge debug (start with ❌/✅ followed by device:action)
+    # but keep short summaries. If every line starts with ✅/❌, just say a summary.
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if lines and all(ln.startswith(("✅", "❌")) for ln in lines):
+        oks = sum(1 for ln in lines if ln.startswith("✅"))
+        fails = len(lines) - oks
+        if fails == 0:
+            return f"Done. {oks} action{'s' if oks != 1 else ''} completed."
+        return f"{oks} action{'s' if oks != 1 else ''} succeeded, {fails} failed."
+    # Otherwise speak up to ~400 chars of the response
+    flat = " ".join(lines)
+    return flat[:400] + ("…" if len(flat) > 400 else "")
+
+
 def cli():
+    """
+    Interactive CLI. With --voice, a background listener accepts speech in
+    parallel with typed input — whichever arrives first is processed next.
+    """
+    import queue as _queue
+
+    voice_enabled = bool(getattr(args, "voice", False))
+    voice_cfg     = config.get("voice", {}) or {}
+
     messages = []
-    print("Welcome to Jarvis! A collaborative system that consists of an LLM as the controller and numerous expert models as collaborative executors. Jarvis can plan tasks, schedule Hugging Face models, generate friendly responses based on your requests, and help you with many things. Please enter your request (`exit` to exit).")
-    while True:
-        message = input("[ User ]: ")
-        if message == "exit":
-            break
-        messages.append({"role": "user", "content": message})
-        answer = chat_huggingface(messages, API_KEY, API_TYPE, API_ENDPOINT, return_planning=False, return_results=False)
-        print("[ Jarvis ]: ", answer["message"])
-        messages.append({"role": "assistant", "content": answer["message"]})
+    input_q   = _queue.Queue()     # both keyboard and mic push utterances here
+    speaker   = None
+    voice_in  = None
+
+    print("Welcome to Jarvis! A collaborative system that consists of an LLM as the "
+          "controller and numerous expert models as collaborative executors. Jarvis "
+          "can plan tasks, schedule Hugging Face models, generate friendly responses "
+          "based on your requests, and help you with many things. "
+          "Type `exit` (or say 'stop listening') to quit.")
+
+    # ── Voice setup (optional, best-effort) ───────────────────────────────────
+    if voice_enabled:
+        try:
+            from voice_io import Speaker, VoiceInput, DEFAULT_WAKE_WORDS
+        except ImportError as e:
+            print(f"[voice] Could not import voice_io: {e}")
+            print("[voice] Install deps: pip install SpeechRecognition pyaudio pyttsx3")
+            voice_enabled = False
+
+    if voice_enabled:
+        elevenlabs_key = voice_cfg.get("elevenlabs_api_key") or ""
+        if elevenlabs_key and not os.getenv("ELEVENLABS_API_KEY"):
+            os.environ["ELEVENLABS_API_KEY"] = elevenlabs_key
+
+        try:
+            speaker = Speaker(
+                backend          = voice_cfg.get("tts_backend", "auto"),
+                elevenlabs_voice = voice_cfg.get("elevenlabs_voice", "Rachel"),
+                elevenlabs_model = voice_cfg.get("elevenlabs_model",
+                                                 "eleven_monolingual_v1"),
+            )
+        except Exception as e:
+            print(f"[voice] Speaker setup failed: {e}")
+            speaker = None
+
+        try:
+            wake_words = voice_cfg.get("wake_words") or list(DEFAULT_WAKE_WORDS)
+            voice_in = VoiceInput(
+                output_queue      = input_q,
+                wake_words        = wake_words,
+                stt_backend       = voice_cfg.get("stt_backend", "google"),
+                whisper_model     = voice_cfg.get("whisper_model", "base"),
+                require_wake_word = not getattr(args, "no_wake_word", False),
+                on_utterance      = lambda t: print(f"[mic] {t}"),
+            )
+            voice_in.start()
+        except Exception as e:
+            print(f"[voice] VoiceInput setup failed: {e}")
+            print("[voice] Continuing with keyboard only.")
+            voice_in = None
+
+        if speaker:
+            speaker.speak("JARVIS online. Ready.")
+
+    # ── Keyboard reader thread — blocks on input(), posts to queue ───────────
+    _typed_exit = threading.Event()
+
+    def _keyboard_loop():
+        while not _typed_exit.is_set():
+            try:
+                line = input("[ User ]: ")
+            except (EOFError, KeyboardInterrupt):
+                _typed_exit.set()
+                input_q.put("__EXIT__")
+                return
+            if line is None:
+                continue
+            line = line.strip()
+            if not line:
+                continue
+            input_q.put(line)
+
+    kb_thread = threading.Thread(target=_keyboard_loop, daemon=True, name="JarvisKeyboard")
+    kb_thread.start()
+
+    # ── Main loop: consume whichever source produced input first ─────────────
+    try:
+        while True:
+            message = input_q.get()
+            if message == "__EXIT__":
+                break
+            if message.lower().strip() in ("exit", "quit", "bye jarvis", "goodbye jarvis"):
+                break
+
+            # Pause mic while JARVIS is responding so TTS doesn't re-trigger STT
+            if voice_in:
+                voice_in.pause()
+
+            messages.append({"role": "user", "content": message})
+            try:
+                answer = chat_huggingface(messages, API_KEY, API_TYPE, API_ENDPOINT,
+                                          return_planning=False, return_results=False)
+            except Exception as e:
+                answer = {"message": f"Sorry, I hit an error: {e}"}
+
+            reply = (answer or {}).get("message", "")
+            print("[ Jarvis ]: ", reply)
+            messages.append({"role": "assistant", "content": reply})
+
+            if speaker:
+                speaker.speak(_response_for_speech(reply))
+                # Wait for TTS to finish before re-opening the mic (avoids echo)
+                speaker.wait_until_done(timeout=30)
+
+            if voice_in:
+                voice_in.resume()
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if voice_in:
+            voice_in.stop()
+        if speaker:
+            speaker.speak("Goodbye.")
+            speaker.wait_until_done(timeout=5)
+            speaker.stop()
+        _typed_exit.set()
+        print("\n[jarvis] shutting down.")
 
 
 def server():
