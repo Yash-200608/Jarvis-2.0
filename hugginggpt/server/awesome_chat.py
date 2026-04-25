@@ -27,6 +27,7 @@ from huggingface_hub.inference_api import InferenceApi
 from huggingface_hub.inference_api import ALL_TASKS
 from device_integration import EndpointDeviceAdapter, DeviceOrchestrator
 from claude_adapter import send_request_claude
+from core.executor import execute_task
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", type=str, default="configs/config.default.yaml")
@@ -1079,10 +1080,12 @@ def chat_huggingface(messages, api_key, api_type, api_endpoint, return_planning 
                     "Configure phone/computer endpoints in server config under 'integrations'."
                 )
             }
-        execution = DEVICE_ORCHESTRATOR.execute(device_command)
-        if execution.get("ok"):
+        action = {"name": device_command["action"], "params": device_command.get("params", {})}
+        command_id = str(uuid.uuid4())
+        execution = execute_task(command_id, action)
+        if execution:
             return {"message": f"Device action executed on {device_command['target']}: {device_command['action']}."}
-        return {"message": f"Device action failed: {execution.get('error', 'unknown error')}."}
+        return {"message": "Device action failed: unknown error."}
 
     task_str = parse_task(context, input, api_key, api_type, api_endpoint)
 
