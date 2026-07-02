@@ -401,35 +401,35 @@ This phase is deliberately low-visibility from a new-major-architecture standpoi
 ## ADR-011: Designate the Canonical Brain Implementation
 
 Semantic ID: ARCH-002
-Status: Under Review (Not Yet Decided)
+Status: Superseded — resolved outside this document, see below
 Category: [Architecture] [Agents] [Memory]
-Owner: Yash (Architect) — Pending
+Owner: Yash (Architect) — Approved
 Risk Level: High (blocks every downstream consolidation decision per roadmap Phase 1)
-Implementation State: Not Started
+Implementation State: Decided — Implementation Pending (Priority #3 in the Chimera roadmap)
 Depends On: ARCH-001 (ADR-001), AGENT-001 (ADR-009)
 Supersedes: None
 Conflicts With: None
 Relates To Principles: P-01, P-07
-Review: This IS the Phase 1 review itself — see `roadmap/MASTER_ROADMAP.md` Phase 1.
-Date: Unconfirmed — see `context/DESIGN_HISTORY.md`
+Review: Brain internally decomposes into multiple cognitive services, or a demonstrated hard-real-time need exceeds the locally-sovereign mechanism in `Brain/docs/CHIMERA_ECOSYSTEM_ARCHITECTURE.md` §4b.
+Date: 2026-07-02
 
 ### Assumptions
-Assumes jarvis_core can be proven to run end-to-end in Phase 2 before this decision is finalized. If jarvis_core cannot be made to run, this ADR's premises (and the recommendation summarized below) would need to be revisited rather than assumed still valid.
+Superseded — see Decision below. The original assumption ("jarvis_core can be proven to run end-to-end in Phase 2") did not hold: audit evidence found jarvis_core has a protocol bug (HMAC signed before `request_id` injection) that guarantees every phone exchange fails verification, and it has never completed one correct run.
 
 ### Evidence
-This ADR does not introduce new evidence — it points to the already-written recommendation in `specifications/BRAIN_SPEC.md` Section 3, which proposes merging jarvis_prod's transport layer, jarvis_core's reasoning layer, and root `core/`'s safety kernel (post-fix) into a single canonical Brain. See that document for full detail rather than repeating it here.
+This entry's premise — that `specifications/BRAIN_SPEC.md` Section 3's in-repo merge (jarvis_prod transport + jarvis_core reasoning + root `core/` safety kernel) was the candidate resolution — is superseded. That plan was written without awareness that a separate, already-implemented Brain repository (`github.com/Yash-200608/Brain`) exists, with its own `PHASE7_CHIMERA_V2_BLUEPRINT.md`/`PHASE8_IMPLEMENTATION_ROADMAP.md` (dated 2026-06-14, predating `BRAIN_SPEC.md`) independently reaching a different conclusion: Brain-the-repo as the hub, JARVIS's islands demoted to node runtime. A cross-repo audit (2026-07-02) and a six-dimension evaluation (correctness, maintainability, security, extensibility, observability, sustainability) found the Brain repo ahead on four dimensions, tied on one (security — both sides insecure, differently), even on one, versus JARVIS's three cognition candidates.
 
 ### Observed Behavior
-No merge work has begun. All four islands (legacy stack, jarvis_prod, jarvis_core, root `core/`) remain structurally separate as of this writing, per `context/CURRENT_STATUS.md`.
+No longer applicable as originally framed (which of the *four JARVIS-internal* islands is canonical) — the actual question was which *repository* is the cognitive authority.
 
 ### Inference
-High-confidence inference (carried from `specifications/BRAIN_SPEC.md`): jarvis_prod's transport (MQTT/Tailscale, ADR-001/ARCH-001) is the most architecturally forward-compatible piece for multi-node addressing; jarvis_core's Planner/Critic/Executor Reflexion design (ADR-009/AGENT-001) is the most structurally sound reasoning approach on paper but is entirely unverified; root `core/`'s safety kernel is the only component with adversarial test rigor but has a confirmed live bug (see ADR-010/PLAN-001) that must be fixed before it is trustworthy as a dependency. None of these three can be merged as-is today without their respective open items (live-run verification for jarvis_prod, end-to-end proof for jarvis_core, and the executor.py fix for root `core/`) being resolved first.
+Superseded — see Decision.
 
 ### Decision
-This ADR is a **placeholder** recording that the canonical-Brain decision is pending, not yet made. It does not select jarvis_prod, jarvis_core, root `core/`, or any merge of them as canonical. Status remains `Under Review` until a human signs off per `specifications/BRAIN_SPEC.md` Section 3.1's preconditions.
+**Resolved.** The standalone Brain repository is the sole cognitive authority; JARVIS is the embodiment platform. This is **not decided in this document** — the full decision record, including alternatives considered, trade-offs, and consequences, is `Brain/docs/DECISION_LOG.md`'s **ADR-011** (same number, different repo — Brain's ecosystem-level ADR log continues this numbering per `Brain/docs/DECISION_LOG.md` ADR-012). This entry is kept as the historical record of the placeholder and is not duplicated here. `specifications/BRAIN_SPEC.md`'s in-repo-merge recommendation does not apply; see `architecture/SYSTEM_ARCHITECTURE.md`'s supersession note (added 2026-07-02) for the same correction at the file-audit level.
 
 ### Consequences
-Every downstream consolidation decision in `roadmap/MASTER_ROADMAP.md` Phase 1 and beyond is blocked on this ADR being resolved — this is why its Risk Level is High despite Implementation State being Not Started. Until this is decided, no new code should be written on the assumption that any one of the four islands is "the" Brain going forward. See `brain/BRAIN_CONSTITUTION.md` for the terminology and invariants that will apply once a canonical implementation is designated.
+No new code should be written on the assumption that JARVIS builds or hosts its own Brain. `jarvis_core`'s and `brain_pc.py`'s cognition are retired per Brain's ADR-014 (Legacy Implementation Handling); their non-cognitive parts (transport/signing/sandbox/phone_executor) are extracted as the JARVIS-owned node SDK. `brain/BRAIN_CONSTITUTION.md`'s terminology (Client, Node, Agent, Tool, Skill) remains useful and is not itself superseded — only its assumption that "Brain" is an in-repo component is.
 
 ---
 
