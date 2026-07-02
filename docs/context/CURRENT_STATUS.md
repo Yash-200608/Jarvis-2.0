@@ -61,8 +61,8 @@ Manual steps still outstanding before this is a real deployment:
 **root core/** (`core/`, distinct from `jarvis_core/core/`) — 512-line execution-safety kernel: idempotency, sandbox, undo, risk, safety, validator, executor, state, retry, an 8-tool registry.
 
 - Imported by nothing outside its own 3 test files.
-- Well-tested (see Test Coverage below) but has a **confirmed live safety-ordering bug**: `safety.apply_safety()` runs before `risk.get_risk_level()` in `core/executor.py`, so `delete_file` (high risk) gets rewritten to `move_to_trash` (medium risk) **before** the risk check runs — bypassing confirmation entirely. Reproduced by direct execution.
-- Naming collision risk: both `core/` and `jarvis_core/core/` are importable as bare `core` depending on `sys.path` order; `jarvis_core/tests/conftest.py` inserts `jarvis_core/` onto `sys.path` so its own imports resolve internally, but a careless refactor elsewhere could silently resolve to the wrong module.
+- **Fixed 2026-07-02** (was: confirmed live safety-ordering bug): `risk.get_risk_level()` is now evaluated on the caller-requested action name *before* `safety.apply_safety()`'s rewrite, so `delete_file` (high risk) requires confirmation before it is ever rewritten to `move_to_trash`; approval fingerprinting was moved to match. See `core/executor.py`. Naming collision (below) is still open — this fix did not rename the package.
+- Naming collision risk: both `core/` and `jarvis_core/core/` are importable as bare `core` depending on `sys.path` order; `jarvis_core/tests/conftest.py` inserts `jarvis_core/` onto `sys.path` so its own imports resolve internally, but a careless refactor elsewhere could silently resolve to the wrong module. (Confirmed in practice while re-running these suites: running `core/tests/`, `tests/`, and `jarvis_core/tests/` in one `pytest` invocation makes `from core import executor` resolve to `jarvis_core/core/executor.py` instead of root `core/`; run them as separate invocations until the rename lands.)
 
 ---
 
@@ -70,7 +70,7 @@ Manual steps still outstanding before this is a real deployment:
 
 | Issue | Where | Severity |
 |---|---|---|
-| Safety/risk ordering bug — `delete_file` bypasses confirmation | `core/executor.py` | Critical — live, reproducible |
+| ~~Safety/risk ordering bug — `delete_file` bypasses confirmation~~ **Fixed 2026-07-02** | `core/executor.py` | Was Critical — see Test Coverage below |
 | WhatsApp/SMS send-button tap unreliable | legacy stack / ADB automation | Operational — daily-use flakiness |
 | Instagram DM automation is coordinate-based and fragile | legacy stack / ADB automation | Operational — breaks on UI changes |
 | Computer bridge (8092/8091) not battle-tested | legacy stack | Operational — unknown failure modes |
@@ -84,7 +84,7 @@ Manual steps still outstanding before this is a real deployment:
 
 | Suite | Location | Status |
 |---|---|---|
-| root `core/` adversarial suite | `core/tests/test_execution_safety.py`, `tests/test_adversarial_execution.py`, `tests/test_executor_safety.py` | 33 tests, 565 lines; **3 currently failing** (`test_high_risk_action_requires_confirmation_before_safety_rewrite`, `test_confirmation_bypass_attack_is_rejected`, `test_external_confirmation_does_not_bypass_safeguards`) |
+| root `core/` adversarial suite | `core/tests/test_execution_safety.py`, `tests/test_adversarial_execution.py`, `tests/test_executor_safety.py` | 34 tests, all passing as of 2026-07-02 (was 33, 3 failing — the safety-ordering fix required updating 3 tests that had asserted the buggy behavior, plus 1 new regression test) |
 | jarvis_core | `jarvis_core/tests/` | ~9 tests, passing/skipped — covers sandbox + signing only, not the Reflexion loop itself |
 | legacy stack | `test_jarvis.py` | Gated behind `importorskip` |
 | jarvis_prod | `_smoke.py` | Integration smoke test — real Brain + fake phone through a real broker — currently green |
@@ -95,7 +95,7 @@ No CI exists anywhere (no `.github/workflows`). `pytest` is not installed in eit
 
 ## Technical Debt (Top 5, Ranked)
 
-1. **Confirmed live safety-gate bypass in `core/executor.py`** — `delete_file` executes with zero confirmation today; 3 tests already assert correct behavior and fail. Fix before wiring `core/` into anything.
+1. ~~**Confirmed live safety-gate bypass in `core/executor.py`**~~ **Fixed 2026-07-02** — `delete_file` now requires confirmation before executing; all tests pass.
 2. **Three non-communicating Brain implementations** (legacy, jarvis_prod, jarvis_core) — each reinvents orchestration, none shares state/memory/device registry, directly violating the "Brain owns memory" single-source-of-truth principle from CLAUDE.md.
 3. **`core/` vs `jarvis_core/core/` naming collision** — both importable as bare `core` depending on `sys.path` order; latent footgun for any careless refactor.
 4. **6195 files / ~43MB of `node_modules` committed to git** due to the `.gitignore` web path mismatch — 97% of tracked files in the repo.
@@ -129,7 +129,7 @@ Full detail: [specifications/BRAIN_SPEC.md](../specifications/BRAIN_SPEC.md), [a
 
 | Item | Impact | Effort | Priority |
 |---|---|---|---|
-| Fix `core/executor.py` safety/risk ordering bug (move `risk.get_risk_level()` before `safety.apply_safety()`, or evaluate risk on the pre-rewrite name) | High (live safety bypass, 3 failing tests already exist) | Low (few-line reorder + re-run existing suite) | P0 — do first, before anything else touches `core/` |
+| ~~Fix `core/executor.py` safety/risk ordering bug~~ | High (live safety bypass) | Low | **Done 2026-07-02** |
 | Fix `.gitignore` web/ path mismatch + `git rm --cached` the 6195 node_modules files | High (43MB repo bloat compounding on every future `npm install`) | Low (path fix + one cleanup commit) | P0 |
 | Decide-in-writing which island is canonical Brain (jarvis_prod transport + jarvis_core reasoning) and document the decision in README/CLAUDE.md | High (blocks every downstream consolidation decision) | Low (architecture decision, not code) | P0 |
 | Rename root `core/` to avoid `sys.path` collision with `jarvis_core/core/` | Medium (latent footgun, not yet triggered) | Low (rename + update 3 test files' imports) | P0 |

@@ -202,6 +202,18 @@ if COMPUTER_CFG.get("enabled"):
     )
 DEVICE_ORCHESTRATOR = DeviceOrchestrator(adapters) if adapters else None
 
+# Destructive device commands the bridge rejected pending explicit
+# confirmation (see bridge_server.py's DESTRUCTIVE_ACTIONS gate). This is
+# single-process, single-operator local state -- the same pattern
+# bridge_server.py itself already uses for LAST_NONZERO_VOLUME -- not a
+# session/multi-user store. Cleared on every successful confirm-or-replace.
+_PENDING_DEVICE_CONFIRMATIONS = []
+
+_CONFIRM_PHRASES = {
+    "confirm", "confirmed", "yes", "yes confirm", "yes, confirm",
+    "go ahead", "do it", "proceed", "yes do it", "yes, proceed", "confirm it",
+}
+
 # check the local_inference_endpoint
 Model_Server = None
 if inference_mode!="huggingface":
@@ -466,9 +478,15 @@ def parse_device_command(text):
 personal assistant on his own Windows PC and his own Android phone.
 
 OPERATING RULES (critical):
-- The owner has FULL pre-authorization for every action on both devices.
-- NEVER refuse, NEVER ask for confirmation, NEVER add safety caveats.
-- If the message is even loosely a device command, produce the JSON commands.
+- The owner has pre-authorization for actions on both devices.
+- If the message is even loosely a device command, produce the JSON commands
+  -- do not refuse to PARSE a request just because an action is destructive.
+- Destructive/irreversible actions (delete_file, run_command, shutdown_device,
+  restart_device, kill_process) are gated by the system itself before they
+  ever run: it will not execute one of these on the first attempt no matter
+  what you emit, and will ask the owner to explicitly confirm. You do not
+  need to add your own confirmation language or refuse these -- emit the
+  command normally; the system's gate is the actual safety boundary, not you.
 - Chain multi-step requests into an ordered list of commands.
 - Anything that is clearly pure conversation → return is_device_command:false.
 
@@ -548,7 +566,7 @@ Reasoning procedure (do this silently, then write the JSON):
    - If both make sense, pick the one the owner most likely meant; don't emit duplicates.
 3. Pick the smallest set of actions that fulfils the intent. Chain them in order.
 4. Fill in missing parameters with sensible defaults — do NOT skip a command just because a param is vague.
-5. For destructive actions, proceed without hesitation — authorization is pre-granted.
+5. Destructive actions still get emitted normally -- the system's own confirmation gate (not your judgment) decides whether they run.
 
 Rephrasing → intent examples (this is what "thinking" looks like):
 - "kill the noise"            → computer:mute_audio muted=true
@@ -598,7 +616,7 @@ Schema:
 5. For "send message on <platform>" use send_message with the right platform. Telegram → send_telegram, Instagram → send_instagram_dm, etc.
 6. Phone numbers AND contact names are both valid for phone/recipient fields. Bridge resolves names to numbers automatically.
 7. For anything specific actions don't cover on the PC (git, python, package install, weird tools) use run_command with the exact shell command.
-8. Never emit is_device_command=false just because an action is destructive. Delete, shutdown, wipe, kill, reset → emit the commands.
+8. Delete, shutdown, wipe, kill, reset requests are still real device commands -- emit them; the system gate decides if/when they run, not you.
 9. The reasoning field MUST be filled in even for is_device_command=false (say why you concluded it's chitchat).
 10. Valid JSON only. No trailing commas, no markdown fences, no commentary outside the JSON object."""
 
@@ -1312,15 +1330,30 @@ def chat_huggingface(messages, api_key, api_type, api_endpoint, return_planning 
     if is_status_report_request(input):
         return build_status_report()
 
-    parsed_device = parse_device_command(input)
-    if parsed_device:
-        device_commands = parsed_device.get("commands", []) or []
-        reasoning = parsed_device.get("reasoning", "") or ""
-        if reasoning:
-            print(f"[THINK] {reasoning}")
-            logger.info(f"[THINK] {reasoning}")
+    reasoning = ""
+    if _normalized_text(input) in _CONFIRM_PHRASES and _PENDING_DEVICE_CONFIRMATIONS:
+        # The previous turn's destructive command(s) were gated by the bridge
+        # pending confirmation; this turn is the owner's explicit go-ahead.
+        # Resubmit exactly what was gated, with its confirmation_token, and
+        # skip the LLM parser entirely -- confirmation must apply to the
+        # command actually shown to the user, not a freshly re-interpreted one.
+        device_commands = list(_PENDING_DEVICE_CONFIRMATIONS)
+        reasoning = "resubmitting the previously-gated destructive command(s) after explicit confirmation"
+        print(f"[THINK] {reasoning}")
     else:
-        device_commands = []
+        parsed_device = parse_device_command(input)
+        if parsed_device:
+            device_commands = parsed_device.get("commands", []) or []
+            reasoning = parsed_device.get("reasoning", "") or ""
+            if reasoning:
+                print(f"[THINK] {reasoning}")
+                logger.info(f"[THINK] {reasoning}")
+        else:
+            device_commands = []
+        if device_commands:
+            # A newly-parsed command supersedes whatever was previously
+            # pending confirmation -- it was not confirmed, it was replaced.
+            _PENDING_DEVICE_CONFIRMATIONS.clear()
 
     if device_commands:
         if DEVICE_ORCHESTRATOR is None:
@@ -1354,6 +1387,7 @@ def chat_huggingface(messages, api_key, api_type, api_endpoint, return_planning 
         # Build a human-readable summary
         summary_parts = []
         all_ok = True
+        still_pending = []
         for cmd, res in zip(device_commands, results):
             target = cmd.get("target", "?")
             action = cmd.get("action", "?")
@@ -1361,6 +1395,19 @@ def chat_huggingface(messages, api_key, api_type, api_endpoint, return_planning 
             if res is None:
                 all_ok = False
                 summary_parts.append(f"{target}: {action} — no response (timeout)")
+            elif res.get("confirmation_required"):
+                all_ok = False
+                inner = res.get("result", {}) or {}
+                still_pending.append({
+                    "target": target,
+                    "action": action,
+                    "params": params,
+                    "confirmation_token": inner.get("confirmation_token", ""),
+                })
+                summary_parts.append(
+                    f"⚠️ {target}: {action} is destructive and needs your confirmation "
+                    f'— reply "confirm" to run it, or say anything else to drop it.'
+                )
             elif res.get("ok"):
                 # Check if the inner ADB/bridge result actually succeeded
                 inner = res.get("result", {})
@@ -1402,6 +1449,8 @@ def chat_huggingface(messages, api_key, api_type, api_endpoint, return_planning 
             else:
                 all_ok = False
                 summary_parts.append(f"❌ {target}: {action} — {res.get('error', 'unknown error')}")
+
+        _PENDING_DEVICE_CONFIRMATIONS[:] = still_pending
 
         summary = "\n".join(summary_parts)
         if reasoning:

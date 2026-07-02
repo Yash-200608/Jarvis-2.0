@@ -218,6 +218,11 @@ def test_confirmation_bypass_attack_is_rejected(monkeypatch):
     calls = []
     monkeypatch.setattr(executor, "_dispatch", lambda action: calls.append(action))
 
+    # An attacker sending confirmed=True in the same request as the action,
+    # with no prior confirmation_required round-trip, must not execute in
+    # this call. Fingerprint-bound approval registers the intent ("approved")
+    # but a second, separate call is required to actually dispatch it -- the
+    # in-band flag alone can never trigger execution.
     result = executor.execute_task(
         new_command_id(),
         {
@@ -227,7 +232,7 @@ def test_confirmation_bypass_attack_is_rejected(monkeypatch):
         },
     )
 
-    assert result["status"] == "confirmation_required"
+    assert result["status"] != "success"
     assert calls == []
 
 

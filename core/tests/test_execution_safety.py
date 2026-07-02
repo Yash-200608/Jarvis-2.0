@@ -55,7 +55,10 @@ def test_high_risk_action_requires_confirmation_before_safety_rewrite():
 
 
 def test_confirmed_delete_is_rewritten_revalidated_and_sandboxed():
-    result = executor.execute_task(
+    # First call: confirmed=True in the same request as the action registers
+    # approval but must not execute -- in-band confirmation never triggers
+    # execution in the same call it arrives in.
+    approved = executor.execute_task(
         "cmd-1",
         {
             "name": "delete_file",
@@ -63,10 +66,56 @@ def test_confirmed_delete_is_rewritten_revalidated_and_sandboxed():
             "confirmed": True,
         },
     )
+    assert approved["status"] == "approved"
+
+    # Second call, same command_id and same requested action: the fingerprint
+    # matches the recorded approval, so risk classification (computed on the
+    # original delete_file request) is satisfied and the safety-rewritten,
+    # undoable primitive actually executes.
+    result = executor.execute_task(
+        "cmd-1",
+        {"name": "delete_file", "params": {"path": "C:/Users/Hp/file.txt"}},
+    )
 
     assert result["status"] == "success"
     assert result["state"] == "success"
     assert result["action"]["name"] == "move_to_trash"
+    assert result["requested_action"] == "delete_file"
+
+
+def test_high_risk_action_confirmation_required_before_rewrite_and_bypass_fails():
+    # The core regression this fix closes: risk must be classified on the
+    # ORIGINAL requested action, not on whatever the safety layer rewrites it
+    # to. Previously, delete_file (high risk) was silently rewritten to
+    # move_to_trash (medium risk) before the risk check ran, so this entire
+    # confirmation gate was unreachable for delete_file.
+    no_confirm = executor.execute_task(
+        "cmd-bypass",
+        {"name": "delete_file", "params": {"path": "C:/Users/Hp/file.txt"}},
+    )
+    assert no_confirm["status"] == "confirmation_required"
+
+    # A single call with confirmed=True (no prior confirmation_required round
+    # trip observed by the caller) must also not execute -- it only records
+    # approval for a subsequent call.
+    inline_confirm = executor.execute_task(
+        "cmd-bypass",
+        {
+            "name": "delete_file",
+            "params": {"path": "C:/Users/Hp/file.txt"},
+            "confirmed": True,
+        },
+    )
+    assert inline_confirm["status"] == "approved"
+
+    # Only a genuinely separate, subsequent call against the matching
+    # fingerprint executes.
+    executed = executor.execute_task(
+        "cmd-bypass",
+        {"name": "delete_file", "params": {"path": "C:/Users/Hp/file.txt"}},
+    )
+    assert executed["status"] == "success"
+    assert executed["action"]["name"] == "move_to_trash"
 
 
 def test_preview_actions_do_not_execute_without_confirmation():

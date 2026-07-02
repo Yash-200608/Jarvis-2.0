@@ -6,7 +6,7 @@ import requests
 
 
 class DeviceAdapter:
-    def execute(self, action, params):
+    def execute(self, action, params, confirmation_token=None):
         raise NotImplementedError()
 
 
@@ -19,7 +19,7 @@ class EndpointDeviceAdapter(DeviceAdapter):
     def configured(self):
         return bool(self.base_url and self.token)
 
-    def execute(self, action, params):
+    def execute(self, action, params, confirmation_token=None):
         if not self.configured():
             return {"ok": False, "error": f"{self.device_name} integration is not configured."}
 
@@ -29,6 +29,8 @@ class EndpointDeviceAdapter(DeviceAdapter):
             "Content-Type": "application/json",
         }
         payload = {"action": action, "params": params}
+        if confirmation_token:
+            payload["confirmation_token"] = confirmation_token
 
         # Actions that legitimately take longer than a quick tap
         SLOW_ACTIONS = {
@@ -54,6 +56,15 @@ class EndpointDeviceAdapter(DeviceAdapter):
             return {"ok": False, "error": f"{self.device_name} bridge error: {e}"}
 
         if response.status_code >= 400:
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = None
+            if isinstance(error_body, dict) and error_body.get("confirmation_required"):
+                # Structured confirmation-required response -- preserve the
+                # confirmation_token and action/params so a caller can
+                # resubmit, rather than collapsing it to a generic error.
+                return {"ok": False, "confirmation_required": True, "result": error_body}
             return {
                 "ok": False,
                 "error": f"{self.device_name} endpoint error {response.status_code}: {response.text}",
@@ -88,7 +99,8 @@ class DeviceOrchestrator:
             return {"ok": False, "error": f"Target device '{target}' is not configured."}
         action = command.get("action")
         params = command.get("params", {})
-        return adapter.execute(action, params)
+        confirmation_token = command.get("confirmation_token")
+        return adapter.execute(action, params, confirmation_token=confirmation_token)
 
     def execute_multi(self, commands):
         """

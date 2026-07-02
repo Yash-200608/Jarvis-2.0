@@ -106,12 +106,14 @@ def test_external_confirmation_does_not_bypass_safeguards(monkeypatch):
     calls = []
     monkeypatch.setattr(executor, "_dispatch", lambda action: calls.append(action))
 
+    # confirmed=True in the same request as the action, with no prior
+    # confirmation_required round-trip, must not execute in this call.
     result = executor.execute_task(
         command_id(),
         {"name": "delete_file", "params": {"path": "C:/Users/Hp/test.txt"}, "confirmed": True},
     )
 
-    assert result["status"] == "confirmation_required"
+    assert result["status"] != "success"
     assert calls == []
 
 

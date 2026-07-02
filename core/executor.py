@@ -77,10 +77,14 @@ def execute_task(command_id: str, action: dict):
         if not validator.validate_action(action):
             return _fail(task_state, "invalid_action")
 
-        action = safety.apply_safety(action)
+        # Risk is classified, and approval fingerprint-bound, on the action the
+        # caller actually requested -- BEFORE any safety rewrite. Computing risk
+        # after apply_safety() let a high-risk request (e.g. delete_file) get
+        # silently downgraded to a medium-risk one (move_to_trash) before the
+        # risk check ever ran, so the confirmation gate never fired.
+        requested_name = action["name"]
         fp = _fingerprint(action)
-
-        action_risk = risk.get_risk_level(action["name"])
+        action_risk = risk.get_risk_level(requested_name)
         if action_risk == "high":
             approved_fp = _approved_commands.get(command_id)
             if approved_fp != fp:
@@ -93,6 +97,8 @@ def execute_task(command_id: str, action: dict):
                     result_status="confirmation_required",
                     risk=action_risk,
                 )
+
+        action = safety.apply_safety(action)
 
         if not validator.validate_action(action):
             return _fail(task_state, "invalid_action_after_safety", action=action)
@@ -134,6 +140,11 @@ def execute_task(command_id: str, action: dict):
             action=action,
             dispatch=dispatch_result,
         )
+        if requested_name != action.get("name"):
+            # The safety layer rewrote the requested action (e.g. delete_file ->
+            # move_to_trash). Keep the original request visible in the audit
+            # trail rather than only recording what was actually dispatched.
+            result["requested_action"] = requested_name
         try:
             undo.record_action(action, result)
         except Exception as exc:

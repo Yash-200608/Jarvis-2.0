@@ -22,7 +22,10 @@ Actions supported:
 import argparse
 import base64
 import ctypes
+import hashlib
+import hmac
 import imaplib
+import json
 import os
 import shutil
 import smtplib
@@ -75,6 +78,24 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 
 LAST_NONZERO_VOLUME = 50
+
+# Actions that are destructive/irreversible-adjacent enough to require an
+# explicit, separate confirmation round-trip before they execute. Neither the
+# LLM parser upstream (awesome_chat.py) nor a single in-band flag can satisfy
+# this gate in one request -- the caller must see confirmation_required, then
+# resubmit the identical action+params with the returned confirmation_token.
+DESTRUCTIVE_ACTIONS = {
+    "run_command", "delete_file", "shutdown_device", "restart_device", "kill_process",
+}
+
+
+def _action_fingerprint(action, params):
+    """Deterministic fingerprint of an action+params pair. Not a secret --
+    it's a challenge the caller must echo back on a second, separate request
+    to prove the destructive action was actually seen and re-submitted
+    deliberately, not auto-completed in one shot by an LLM or script."""
+    payload = json.dumps({"action": action, "params": params}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -264,7 +285,8 @@ def create_app(device_name, token, dry_run):
     def execute():
         # ── Auth ──────────────────────────────────────────────────────────────
         auth = request.headers.get("Authorization", "")
-        if auth != f"Bearer {token}":
+        expected = f"Bearer {token}"
+        if not hmac.compare_digest(auth, expected):
             return jsonify({"ok": False, "error": "Unauthorized"}), 401
 
         payload = request.get_json(silent=True) or {}
@@ -280,6 +302,29 @@ def create_app(device_name, token, dry_run):
         # ── Dry-run short-circuit ─────────────────────────────────────────────
         if dry_run:
             return jsonify(base)
+
+        # ── Confirmation gate for destructive actions ──────────────────────────
+        # Fail closed: a destructive action must be re-submitted, identically,
+        # with the confirmation_token this endpoint returns on the first
+        # attempt. No caller -- human, LLM, or script -- can complete one of
+        # these actions in a single request.
+        if action in DESTRUCTIVE_ACTIONS:
+            fp = _action_fingerprint(action, params)
+            supplied_token = str(payload.get("confirmation_token", ""))
+            if not hmac.compare_digest(supplied_token, fp):
+                return jsonify({
+                    "ok": False,
+                    "confirmation_required": True,
+                    "device": device_name,
+                    "action": action,
+                    "params": params,
+                    "confirmation_token": fp,
+                    "error": (
+                        f"'{action}' is destructive and requires confirmation. "
+                        f"Re-submit the identical action and params with "
+                        f'"confirmation_token": "{fp}" to execute it.'
+                    ),
+                }), 409
 
         # ══════════════════════════════════════════════════════════════════════
         #  PC CONTROL
