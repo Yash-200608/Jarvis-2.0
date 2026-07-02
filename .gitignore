@@ -184,3 +184,5 @@ pytest-cache-files-*/
 # Live credentials should live in env vars, not checked-in YAML
 # (config.*.yaml stays tracked with placeholders; dev-local keys go in config.*.dev.yaml)
 
+.claude/
+CLAUDE.md

@@ -9,7 +9,7 @@ _lock = RLock()
 def record_action(action, result):
     with _lock:
         if len(history) >= MAX_HISTORY:
-            raise OverflowError("Undo history is full")
+            return
         history.append({"action": action, "result": result, "undone": False})
 
 

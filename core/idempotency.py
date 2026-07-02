@@ -21,10 +21,9 @@ def _load() -> None:
 
 
 def _persist() -> None:
-    _STORE_PATH.write_text(
-        json.dumps(sorted(executed_ids), indent=2),
-        encoding="utf-8",
-    )
+    temp_path = _STORE_PATH.with_suffix(_STORE_PATH.suffix + ".tmp")
+    temp_path.write_text(json.dumps(sorted(executed_ids), indent=2), encoding="utf-8")
+    temp_path.replace(_STORE_PATH)
 
 
 _load()
