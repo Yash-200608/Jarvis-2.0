@@ -1,7 +1,7 @@
 """Sandbox resolver unit tests.
 
 Focused on the one thing we absolutely cannot get wrong — path escape.
-Run with ``pytest tests/test_sandbox.py``.
+Run with ``pytest jarvis_node_sdk/tests/test_sandbox.py``.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from core.sandbox import SandboxViolation, is_inside_sandbox, safe_path
+from jarvis_node_sdk.sandbox import SandboxViolation, is_inside_sandbox, safe_path
 
 
 def test_simple_relative(tmp_path: Path) -> None:

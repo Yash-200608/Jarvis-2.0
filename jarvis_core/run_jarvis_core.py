@@ -18,6 +18,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+# jarvis_node_sdk/ lives one level up (JARVIS repo root), a sibling of
+# jarvis_core/ -- this script is normally launched with cwd=jarvis_core/, so
+# `core.*` resolves via Python's implicit script-directory sys.path entry,
+# but jarvis_node_sdk needs the repo root added explicitly.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from core.brain import Brain
 from core.config import load_config
 from core.executor import Executor
@@ -25,8 +31,8 @@ from core.logging_setup import configure_logging, get_logger
 from core.memory import MemoryStore
 from core.ollama_client import OllamaClient
 from core.scheduler import MaintenanceScheduler
-from core.sensors import SensorEvent, SensorLoop
-from core.transport import MqttTransport
+from jarvis_node_sdk.sensors import SensorEvent, SensorLoop
+from jarvis_node_sdk.transport import MqttTransport
 
 log = get_logger("CORE")
 

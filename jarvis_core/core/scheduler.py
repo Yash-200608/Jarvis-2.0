@@ -25,7 +25,7 @@ import tiktoken
 from .config import JarvisConfig
 from .logging_setup import get_logger
 from .ollama_client import OllamaClient
-from .transport import MqttTransport
+from jarvis_node_sdk.transport import MqttTransport
 
 log = get_logger("SCHED")
 

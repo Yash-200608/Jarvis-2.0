@@ -35,23 +35,23 @@ class T:
     """`presence`/`state` are retained; `cmd`/`response`/`event`/`heartbeat`
     are not. Heartbeat is QoS 0 (disposable); everything else is QoS 1."""
     @staticmethod
-    def cmd(node: str)       -> str: return f"jarvis/node/{node}/cmd"
+    def cmd(node: str)       -> str: return f"chimera/{node}/cmd"
     @staticmethod
-    def response(node: str)  -> str: return f"jarvis/node/{node}/response"
+    def response(node: str)  -> str: return f"chimera/{node}/response"
     @staticmethod
-    def event(node: str)     -> str: return f"jarvis/node/{node}/event"
+    def event(node: str)     -> str: return f"chimera/{node}/event"
     @staticmethod
-    def presence(node: str)  -> str: return f"jarvis/node/{node}/presence"
+    def presence(node: str)  -> str: return f"chimera/{node}/presence"
     @staticmethod
-    def state(node: str)     -> str: return f"jarvis/node/{node}/state"
+    def state(node: str)     -> str: return f"chimera/{node}/state"
     @staticmethod
-    def heartbeat(node: str) -> str: return f"jarvis/node/{node}/heartbeat"
+    def heartbeat(node: str) -> str: return f"chimera/{node}/heartbeat"
 
-    ALL_RESPONSE  = "jarvis/node/+/response"
-    ALL_EVENT     = "jarvis/node/+/event"
-    ALL_PRESENCE  = "jarvis/node/+/presence"
-    ALL_STATE     = "jarvis/node/+/state"
-    ALL_HEARTBEAT = "jarvis/node/+/heartbeat"
+    ALL_RESPONSE  = "chimera/+/response"
+    ALL_EVENT     = "chimera/+/event"
+    ALL_PRESENCE  = "chimera/+/presence"
+    ALL_STATE     = "chimera/+/state"
+    ALL_HEARTBEAT = "chimera/+/heartbeat"
 
 
 def _now() -> float:

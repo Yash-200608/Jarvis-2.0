@@ -35,9 +35,9 @@ from .executor import ExecutionError, Executor
 from .logging_setup import get_logger
 from .memory import MemoryStore
 from .ollama_client import OllamaClient, OllamaError
-from .sandbox import is_inside_sandbox
-from .sensors import SensorEvent
-from .transport import MqttTransport
+from jarvis_node_sdk.sandbox import is_inside_sandbox
+from jarvis_node_sdk.sensors import SensorEvent
+from jarvis_node_sdk.transport import MqttTransport
 
 planner_log = get_logger("PLANNER")
 critic_log = get_logger("CRITIC")

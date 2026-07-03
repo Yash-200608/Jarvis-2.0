@@ -18,14 +18,15 @@ import asyncio
 import os
 import shlex
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
 from .config import JarvisConfig
 from .logging_setup import get_logger
-from .sandbox import SandboxViolation, safe_path
-from .signing import sign_envelope
-from .transport import MqttTransport
+from jarvis_node_sdk.sandbox import SandboxViolation, safe_path
+from jarvis_node_sdk.signing import sign_envelope
+from jarvis_node_sdk.transport import MqttTransport
 
 log = get_logger("EXECUTOR")
 
@@ -64,8 +65,14 @@ class Executor:
     async def _execute_phone(
         self, tool: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
+        # request_id must be part of the payload *before* signing -- transport.py
+        # injects request_id into the outgoing payload, and the receiver verifies
+        # the HMAC over the full envelope it receives (request_id included). If
+        # signing happens first, verification fails on every phone command.
+        request_id = str(uuid.uuid4())
         envelope = sign_envelope(
-            {"action": tool, "params": payload}, self._cfg.hmac_key
+            {"action": tool, "params": payload, "request_id": request_id},
+            self._cfg.hmac_key,
         )
         try:
             return await self._bus.request(
