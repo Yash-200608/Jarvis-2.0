@@ -91,6 +91,34 @@ def test_valid_ping_publishes_a_verified_signed_response() -> None:
     assert verify(response, KEY) is True
 
 
+def test_valid_ping_with_request_id_echoes_it_through_real_dispatch() -> None:
+    """Priority #4 Milestone 2, proven through the REAL subscribe/publish
+    wiring (not just handle_command() in isolation, already covered by
+    test_command_handler.py) -- the request_id on an inbound cmd survives
+    onto the published response."""
+    transport = MqttTransport(_FakeMqttConfig())
+    published: dict = {}
+
+    async def fake_publish(topic, payload, *, qos=None, retain=False):
+        published["payload"] = payload
+
+    transport.publish = fake_publish  # type: ignore[method-assign]
+
+    async def run():
+        await start_command_listener(transport, KEY, NODE)
+        fake_client = _FakeAiomqttClient(
+            _FakeMessages(
+                [_FakeMsg(f"chimera/{NODE}/cmd", _signed_cmd_bytes("ping", request_id="xyz-789"))]
+            )
+        )
+        await transport._dispatch_loop(fake_client)
+
+    asyncio.run(run())
+
+    response = ChimeraEnvelope.model_validate(published["payload"])
+    assert response.request_id == "xyz-789"
+
+
 def test_tampered_cmd_publishes_nothing() -> None:
     transport = MqttTransport(_FakeMqttConfig())
     published = {"called": False}

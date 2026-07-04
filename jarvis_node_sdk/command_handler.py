@@ -4,6 +4,11 @@ module, proves Brain-to-JARVIS command dispatch (Priority #3 Milestone 6).
 NOT a skill/task framework: exactly one dummy action ("ping"), nothing
 else. This proves the authenticated request/response path -- a real
 dispatch table, EventBus wiring, and device capabilities are later work.
+
+Priority #4 Milestone 2: echoes the inbound cmd's request_id back on the
+response envelope, so Brain's mqtt/signed.py can correlate by request_id
+(safe for concurrent overlapping commands) instead of falling back to
+(verb, action) matching for every real round trip.
 """
 
 from __future__ import annotations
@@ -42,5 +47,6 @@ def handle_command(payload: dict, key: str, node: str) -> ChimeraEnvelope | None
         verb="response",
         action=envelope.action,
         params=result,
+        request_id=envelope.request_id,
     )
     return sign(response, key)

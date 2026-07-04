@@ -8,10 +8,10 @@
 #     python scripts/sync_chimera_contract.py --jarvis-root <path-to-JARVIS>
 #
 # Source repo:      https://github.com/Yash-200608/Brain.git
-# Source commit:    f676b4b11ba94b6ab8d6c4e8f654f724d0a84c2b+dirty
+# Source commit:    bbd74e9ea996065e4021eeb0043fbbadcd0b5240+dirty
 # Contract version: 1
-# Generated (UTC):  2026-07-03T12:33:56+00:00
-# Content hash:     d0eb0e818d3f3095  (sha256 of source, first 16 hex chars)
+# Generated (UTC):  2026-07-04T09:54:56+00:00
+# Content hash:     985bbfb659b6390e  (sha256 of source, first 16 hex chars)
 
 """ChimeraEnvelope — HMAC-signed east-west (Brain <-> node) wire contract.
 
@@ -117,6 +117,19 @@ class ChimeraEnvelope(BaseModel):
     risk: RiskTier = RiskTier.HIGH  # fail-closed default
     nonce: str = Field(default_factory=lambda: secrets.token_hex(16))
     ts: int = Field(default_factory=lambda: int(time.time()))
+    # Optional correlation id (ADR-013's adopted message shape names
+    # "correlation-id-based request/response matching"; Priority #3 shipped
+    # without it as a deliberate, recorded deferral -- see
+    # docs/audits/PRIORITY-3-EXECUTION-SPINE-CLOSURE.md item 2). Completed in
+    # Priority #4 Milestone 2: a "cmd" envelope's request_id, when a
+    # responder echoes it back on the matching "response", lets
+    # mqtt/signed.py's send_command_and_await_response() correlate
+    # concurrent overlapping commands to the same node+action safely.
+    # Optional and additive (Section 8's shape-versioning rule) -- a
+    # response with no request_id still correlates via the (verb, action)
+    # fallback that was the sole matching mechanism before this field
+    # existed.
+    request_id: str | None = None
     sig: str = ""  # populated by sign(); empty until signed
 
     def signable_dict(self) -> dict[str, Any]:

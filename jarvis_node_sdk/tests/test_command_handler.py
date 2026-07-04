@@ -37,6 +37,31 @@ def test_valid_ping_returns_verified_pong_response() -> None:
     assert verify(response, KEY) is True
 
 
+def test_valid_ping_echoes_request_id_on_response() -> None:
+    """Priority #4 Milestone 2: handle_command() must copy the inbound
+    cmd's request_id onto the response so Brain's send_command_and_await_
+    response() can correlate by request_id instead of the (verb, action)
+    fallback."""
+    payload = _signed_cmd_payload("ping", request_id="abc-123")
+
+    response = handle_command(payload, KEY, NODE)
+
+    assert response is not None
+    assert response.request_id == "abc-123"
+
+
+def test_ping_with_no_request_id_echoes_none() -> None:
+    """A cmd with no request_id (an older caller) must not have one
+    invented for it -- the response's request_id stays None, which is
+    exactly what makes Brain's (verb, action) fallback path trigger."""
+    payload = _signed_cmd_payload("ping")
+
+    response = handle_command(payload, KEY, NODE)
+
+    assert response is not None
+    assert response.request_id is None
+
+
 def test_unknown_action_still_returns_a_validly_signed_response() -> None:
     payload = _signed_cmd_payload("do-a-backflip")
 
