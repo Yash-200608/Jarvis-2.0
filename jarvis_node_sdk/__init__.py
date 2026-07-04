@@ -16,6 +16,7 @@ it. Keep its ``verify()`` in sync with ``signing.py``'s
 
 from __future__ import annotations
 
+from .capabilities import SkillRegistry, publish_capabilities
 from .chimera_contract import CONTRACT_VERSION, ChimeraEnvelope, RiskTier, sign, verify
 from .command_handler import handle_command
 from .command_listener import start_command_listener
@@ -53,4 +54,6 @@ __all__ = [
     "publish_presence",
     "start_presence_heartbeat",
     "publish_state",
+    "SkillRegistry",
+    "publish_capabilities",
 ]
