@@ -1,7 +1,18 @@
 # JARVIS Documentation
 
-Status: Planning phase - pre-implementation
+Status: Planning phase - pre-implementation (see 2026-07-04 note below)
 Last updated: 2026-07-01
+
+> **2026-07-04 note:** Priority #1 (security hardening), Priority #2
+> (Brain/JARVIS architectural boundary, resolved in Brain's ADR-011), and
+> Priority #3 (execution spine — `jarvis_node_sdk`, live-tested against
+> Brain) have all since landed. This document set's "planning phase,
+> nothing built yet" framing is stale for those specific items — see
+> [`context/CURRENT_STATUS.md`](context/CURRENT_STATUS.md)'s own
+> 2026-07-04 update for what's actually current. The rest of this
+> document (and the doc set it indexes) remains an accurate description
+> of the legacy stack / jarvis_prod / jarvis_core / root `core/` islands,
+> which none of that work touched.
 
 This directory is the canonical, permanent documentation system for the JARVIS / Chimera Ecosystem project. It is intended to be the source of truth for every future Claude Code session, every human contributor, and every architecture or planning decision made on this repo. If a decision, a piece of state, or a claim about "what exists today" isn't written here, treat it as unknown rather than assumed.
 

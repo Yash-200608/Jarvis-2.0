@@ -18,11 +18,14 @@ from __future__ import annotations
 
 from .chimera_contract import CONTRACT_VERSION, ChimeraEnvelope, RiskTier, sign, verify
 from .command_handler import handle_command
+from .command_listener import start_command_listener
 from .config import JarvisConfig, MqttConfig, load_config
 from .logging_setup import configure_logging, get_logger
+from .presence_publisher import publish_presence, start_presence_heartbeat
 from .sandbox import SandboxViolation, is_inside_sandbox, safe_path
 from .sensors import SensorEvent, SensorLoop
 from .signing import MAX_SKEW_SECONDS, sign_envelope, verify_envelope
+from .state_publisher import publish_state
 from .transport import MqttTransport
 
 __all__ = [
@@ -46,4 +49,8 @@ __all__ = [
     "sign",
     "verify",
     "handle_command",
+    "start_command_listener",
+    "publish_presence",
+    "start_presence_heartbeat",
+    "publish_state",
 ]

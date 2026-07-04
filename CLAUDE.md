@@ -7,6 +7,11 @@
 
 ## What This Project Is
 
+> JARVIS is a local-first AI Operating System that runs on your personal
+> computer, orchestrates AI reasoning through Brain, manages devices
+> through an execution spine, and provides a unified interface for voice,
+> memory, automation, vision, and hardware control.
+
 The **Chimera Ecosystem** is a distributed AI system built around three layers:
 
 | Layer | Component | Role |

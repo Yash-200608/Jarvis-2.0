@@ -1,22 +1,40 @@
 # Current Status — Operational Snapshot
 
-Status: Planning phase — pre-implementation
-Last updated: 2026-07-01
+Status: Priority #3 (execution spine) closed — see update below
+Last updated: 2026-07-04
 
 > This document is step 3 of the required session-start reading order — see [`context/AI_SESSION_BOOTSTRAP.md`](AI_SESSION_BOOTSTRAP.md) for the full ordered protocol (Vision → Brain Constitution → this document → Decision Log → Roadmap). Read it first if you haven't. Otherwise: this is the fastest way to know what actually runs today versus what is designed, dormant, or aspirational. For the target architecture see [architecture/SYSTEM_ARCHITECTURE.md](../architecture/SYSTEM_ARCHITECTURE.md); for how we got here see [context/DECISION_LOG.md](DECISION_LOG.md) and [context/DESIGN_HISTORY.md](DESIGN_HISTORY.md); for the phased plan see [roadmap/MASTER_ROADMAP.md](../roadmap/MASTER_ROADMAP.md).
+
+> **2026-07-04 update:** most of this document (the "three fragmented Brain
+> implementations" narrative below) still describes the 2026-07-01
+> pre-implementation snapshot and remains accurate for those specific
+> components — none of Priority #1–#3's work touched the legacy stack,
+> jarvis_prod, or jarvis_core's cognition loop. What has changed since: a
+> fifth, new component, **`jarvis_node_sdk/`** (extracted from jarvis_core's
+> non-cognitive parts per Brain's ADR-011/ADR-014 — see
+> `Brain/docs/DECISION_LOG.md`), now implements a real, live-tested
+> execution spine end-to-end against Brain: authenticated presence/state
+> publishing, command receipt and dispatch, and signed response return, all
+> over a real MQTT broker. This is the ecosystem-level "Brain owns cognition,
+> JARVIS owns embodiment" boundary (ADR-011) actually operational for the
+> first time, not just designed. Full evidence and detail live in Brain's
+> `docs/audits/PRIORITY-3-EXECUTION-SPINE-CLOSURE.md` per the documentation-
+> ownership split in Brain's ADR-012 — this file records JARVIS's own
+> component status, not the ecosystem-level closure record.
 
 ---
 
 ## TL;DR
 
-The repo contains **three non-communicating Python "Brain" implementations plus a fourth disconnected safety-kernel module**. Only one of the four is used daily. None of them implement the Chimera vision in [context/PROJECT_CONTEXT.md](PROJECT_CONTEXT.md). There is one confirmed live security bug and one confirmed repo-hygiene bug that both need fixing before any further consolidation work. See labels below — reuse them verbatim in all future docs/sessions.
+The repo contains **three non-communicating Python "Brain" implementations plus a fourth disconnected safety-kernel module**, largely unchanged since 2026-07-01 — see the 2026-07-04 update note above. None of them implement the Chimera vision in [context/PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) on their own. A fifth component, `jarvis_node_sdk/`, now does implement (a first, minimal slice of) that vision — the signed MQTT execution spine, live-tested against Brain. See labels below — reuse them verbatim in all future docs/sessions.
 
 | Label | What it is | Maturity |
 |---|---|---|
-| **legacy stack** | `hugginggpt/server/` — `awesome_chat.py`, Flask, HuggingFace + Claude API | Daily use (only real system) |
+| **legacy stack** | `hugginggpt/server/` — `awesome_chat.py`, Flask, HuggingFace + Claude API | Daily use (only real system for phone/legacy automation) |
 | **jarvis_prod** | `hugginggpt/server/jarvis_prod/` — `brain_pc.py` + `agent_phone.py`, MQTT v5 | Smoke-tested, never deployed live |
-| **jarvis_core** | `jarvis_core/` — Planner/Critic/Executor Reflexion loop, Ollama + ChromaDB | Prototype, never run end-to-end |
+| **jarvis_core** | `jarvis_core/` — Planner/Critic/Executor Reflexion loop, Ollama + ChromaDB | Prototype, never run end-to-end (cognition half only — see below) |
 | **root core/** | `core/` — execution-safety kernel (idempotency, sandbox, undo, risk) | Well-tested, dormant, has a live bug |
+| **jarvis_node_sdk** | `jarvis_node_sdk/` — signed `chimera/<node>/<verb>` MQTT contract, extracted from jarvis_core's non-cognitive parts | **Active — live-tested end-to-end against Brain (2026-07-04)** |
 
 ---
 
@@ -30,8 +48,43 @@ The **legacy stack** (`hugginggpt/server/awesome_chat.py`) is the only system in
 | Bridge services | 8092 / 8091 | Flask bridges used for the daily ADB-driven command path |
 
 - Python 3.10, dedicated `jarvis_env` virtualenv.
-- No MQTT, no Brain/memory layer, no device registry — this is a monolithic, single-process assistant, not the distributed Chimera model.
+- No MQTT, no Brain/memory layer, no device registry — this is a monolithic, single-process assistant, not the distributed Chimera model. (A device registry now exists, Brain-side — see `jarvis_node_sdk` below — but this legacy stack is unrelated to it and unaffected by it.)
 - Still soft-depended-on by `jarvis_prod`'s `brain_pc.py` (`_brain_prompt` has a try/except import of `awesome_chat`'s NL parsing) — treat as **do-not-touch** until a replacement is proven (see [roadmap/MASTER_ROADMAP.md](../roadmap/MASTER_ROADMAP.md) Phase 4).
+
+---
+
+## jarvis_node_sdk — Execution Spine (Active, live-tested 2026-07-04)
+
+Extracted from `jarvis_core/core/`'s non-cognitive modules (`transport.py`,
+`signing.py`, `sandbox.py`) per Brain's ADR-011/ADR-014, `jarvis_node_sdk/`
+is the JARVIS-side half of the Priority #3 execution spine — the first
+component in this repo proven to run live end-to-end against the
+canonical Brain, not just smoke-tested or prototyped.
+
+| Module | Role |
+|---|---|
+| `chimera_contract.py` | Vendored, generated copy of Brain's canonical `ChimeraEnvelope`/`RiskTier`/`sign`/`verify` (do not hand-edit — regenerate via Brain's `scripts/sync_chimera_contract.py`) |
+| `transport.py` | `MqttTransport` — async MQTT client, supervised reconnect, exact-match + `#`-wildcard dispatch |
+| `command_handler.py` / `command_listener.py` | Verifies + dispatches an inbound `chimera/<node>/cmd` message to a single dummy "ping" action, returns a signed response |
+| `presence_publisher.py` | `publish_presence()` (one-shot) + `start_presence_heartbeat()` (periodic loop) |
+| `state_publisher.py` | `publish_state()` — one-shot, deliberately not a polling loop |
+
+**Live-tested 2026-07-04** (Brain's Priority #3 Milestone 12): a real
+standalone node (`run_chimera_demo_node.py`, JARVIS repo root) connected to
+the actual local Mosquitto broker (anonymous — no credentials configured or
+needed), ran continuously for 13+ minutes publishing a 15-second presence
+heartbeat without a gap, and correctly answered every one of 6+ real "ping"
+commands sent from Brain over that window — confirmed via Brain's own
+`GET /api/devices/` API, the node's own logs, and Brain's dashboard UI, not
+just a unit test. Full evidence: `Brain/docs/audits/PRIORITY-3-EXECUTION-SPINE-CLOSURE.md`.
+
+**Explicitly not yet done:** no auto-start wiring into any real, always-on
+JARVIS entrypoint (`run_chimera_demo_node.py` is a demo/proof script, not a
+production runner); no multi-node operation ever exercised; no scope
+enforcement on Brain's device-action routes (flagged, deliberately
+deferred, Brain-side). None of this repo's other four components
+(legacy stack, jarvis_prod, jarvis_core's cognition loop, root `core/`)
+were touched by this work.
 
 ---
 
@@ -88,15 +141,16 @@ Manual steps still outstanding before this is a real deployment:
 | jarvis_core | `jarvis_core/tests/` | ~9 tests, passing/skipped — covers sandbox + signing only, not the Reflexion loop itself |
 | legacy stack | `test_jarvis.py` | Gated behind `importorskip` |
 | jarvis_prod | `_smoke.py` | Integration smoke test — real Brain + fake phone through a real broker — currently green |
+| **jarvis_node_sdk** | `jarvis_node_sdk/tests/` | **26 passed + 1 pre-existing skip as of 2026-07-04** — unlike the other three suites, exercised against a real broker at least once (Milestone 12), not fake-only |
 
-No CI exists anywhere (no `.github/workflows`). `pytest` is not installed in either primary venv, so none of the above runs automatically.
+No CI exists anywhere (no `.github/workflows`). `pytest` is not installed in either primary venv, so none of the above runs automatically. `jarvis_node_sdk/tests/` runs under `C:\Users\Hp\AppData\Local\Programs\Python\Python312\python.exe` — see Brain's project memory for the current per-interpreter package inventory on this dev machine if a different interpreter is needed.
 
 ---
 
 ## Technical Debt (Top 5, Ranked)
 
 1. ~~**Confirmed live safety-gate bypass in `core/executor.py`**~~ **Fixed 2026-07-02** — `delete_file` now requires confirmation before executing; all tests pass.
-2. **Three non-communicating Brain implementations** (legacy, jarvis_prod, jarvis_core) — each reinvents orchestration, none shares state/memory/device registry, directly violating the "Brain owns memory" single-source-of-truth principle from CLAUDE.md.
+2. **Three non-communicating Brain implementations** (legacy, jarvis_prod, jarvis_core) — each reinvents orchestration, none shares state/memory/device registry, directly violating the "Brain owns memory" single-source-of-truth principle from CLAUDE.md. (`jarvis_node_sdk` is the exception, and deliberately so — it originates no plans of its own and reports all state to the real, canonical Brain's device registry, per ADR-011.)
 3. **`core/` vs `jarvis_core/core/` naming collision** — both importable as bare `core` depending on `sys.path` order; latent footgun for any careless refactor.
 4. **6195 files / ~43MB of `node_modules` committed to git** due to the `.gitignore` web path mismatch — 97% of tracked files in the repo.
 5. **No `pc.*` skill executor exists** despite `brain_pc.py`, `telegram_gateway.py`, and `schedule.example.json` all assuming one does — `jarvis_prod` cannot control the PC it runs on.
@@ -107,14 +161,14 @@ No CI exists anywhere (no `.github/workflows`). `pytest` is not installed in eit
 
 ## Missing Systems vs. Vision
 
-Measured against [vision/JARVIS_VISION.md](../vision/JARVIS_VISION.md) and [context/PROJECT_CONTEXT.md](PROJECT_CONTEXT.md)'s Chimera model, nearly everything above "single MQTT command round-trip" is absent:
+Measured against [vision/JARVIS_VISION.md](../vision/JARVIS_VISION.md) and [context/PROJECT_CONTEXT.md](PROJECT_CONTEXT.md)'s Chimera model, nearly everything above "single MQTT command round-trip" was absent as of 2026-07-01. **As of 2026-07-04, exactly that round-trip (and presence/state alongside it) is now real** — see `jarvis_node_sdk` above — though only for one node type (a generic demo node, not any of the four listed below) and one dummy action ("ping"). Everything else in this list is still accurate:
 
-- No shared Memory Manager across any two islands (jarvis_core's ChromaDB RAG has never persisted an embedding; jarvis_prod has only a SQLite job log; root `core/`'s `memory.py` is unused).
-- No Context Manager or Device Registry — only the Nothing Phone 3a Lite exists as a live node; OPPO, Vivo 1901, Arduino UNO R4 WiFi, and the salvaged tablet components are all unaddressed in code.
-- No Agent Manager / true multi-agent orchestration — jarvis_core's Planner/Critic/Executor is a single linear pipeline, not a coordinator, and has never run.
+- No shared Memory Manager across any two islands (jarvis_core's ChromaDB RAG has never persisted an embedding; jarvis_prod has only a SQLite job log; root `core/`'s `memory.py` is unused). Brain's own memory layer is out of scope for this repo's docs — see Brain's own documentation.
+- **Device Registry now exists, Brain-side** (`Brain/devices/`, live-tested against a real `jarvis_node_sdk` node) — but only the Nothing Phone 3a Lite exists as a *physical* live node candidate today, and it does not yet run `jarvis_node_sdk`; OPPO, Vivo 1901, Arduino UNO R4 WiFi, and the salvaged tablet components remain entirely unaddressed in code. No Context Manager exists beyond this registry.
+- No Agent Manager / true multi-agent orchestration — jarvis_core's Planner/Critic/Executor is a single linear pipeline, not a coordinator, and has never run. `jarvis_node_sdk`'s command dispatch is a single dummy action, deliberately not a task/skill framework (out of Priority #3's scope by design).
 - No Knowledge Layer / knowledge graph in practice — `jarvis_core/brain/knowledge_graph.md` is still its template header.
 - No PC-side skill executor (see `pc.*` gap above).
-- No dashboard/HUD — `hugginggpt/web` is a single fixed-width chat column, unmodified HuggingGPT/ChatGPT template, no MQTT client, no state store, no charting.
+- No dashboard/HUD in *this* repo — `hugginggpt/web` is still a single fixed-width chat column, unmodified HuggingGPT/ChatGPT template, no MQTT client, no state store, no charting. (Brain's own separate `frontend/dashboard/` now has a live devices panel with a real command button — see Brain's Priority #3 closure report — but that's a Brain-repo artifact, not this one.)
 - No voice interface wired to any current stack.
 - No computer-use/automation layer beyond unused `pyautogui` dependencies.
 - No robotics/IoT integration beyond the aspirational hardware inventory in CLAUDE.md.
@@ -150,6 +204,7 @@ Full detail: [specifications/BRAIN_SPEC.md](../specifications/BRAIN_SPEC.md), [a
 
 ## See Also
 
+- **Brain's `docs/audits/PRIORITY-3-EXECUTION-SPINE-CLOSURE.md`** — the full ecosystem-level closure record for the execution spine `jarvis_node_sdk` implements (evidence, remaining technical debt, Priority #4 recommendations); this file only tracks JARVIS's own component status per the documentation-ownership split in Brain's ADR-012.
 - [context/PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) — full Chimera vision and hardware inventory
 - [context/DECISION_LOG.md](DECISION_LOG.md) — full technical debt and architecture decision record
 - [context/DESIGN_HISTORY.md](DESIGN_HISTORY.md) — how the three islands came to exist
