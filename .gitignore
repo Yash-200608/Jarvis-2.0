@@ -186,3 +186,4 @@ pytest-cache-files-*/
 
 .claude/
 CLAUDE.md
+core/.executed_ids.json
