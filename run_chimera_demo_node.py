@@ -25,6 +25,7 @@ import sys
 
 from jarvis_node_sdk.capabilities import SkillRegistry, publish_capabilities
 from jarvis_node_sdk.command_listener import start_command_listener
+from jarvis_node_sdk.pc_skills import build_pc_skills
 from jarvis_node_sdk.phone_skills import build_phone_skills
 from jarvis_node_sdk.presence_publisher import publish_presence, start_presence_heartbeat
 from jarvis_node_sdk.state_publisher import publish_state
@@ -48,15 +49,19 @@ class _DemoMqttConfig:
         self.password = None
 
 
-async def run(node: str, key: str, host: str, port: int, state: dict | None) -> None:
+async def run(
+    node: str, key: str, host: str, port: int, state: dict | None, ceilings: str | None
+) -> None:
     cfg = _DemoMqttConfig(host, port, node)
     async with MqttTransport(cfg) as transport:
-        # Priority #4 M5: real skill table + capability declaration. On a
-        # non-Termux host the termux-gated skills honestly report
+        # Priority #4 M5/M6: real skill tables + capability declaration. On
+        # a non-Termux host the termux-gated phone skills honestly report
         # {"ok": false, "error": "termux-api not installed"} -- the spine
-        # dispatch is real either way; real Termux success is the phone
-        # deployment milestone's concern.
-        skills = build_phone_skills()
+        # dispatch is real either way. The pc.* skills execute through root
+        # core/'s safety kernel behind the operator ceiling file (--ceilings;
+        # absent = fail-closed defaults: max_auto_risk medium, so
+        # pc.shell.run is refused locally no matter what Brain sends).
+        skills = {**build_phone_skills(), **build_pc_skills(ceilings_path=ceilings)}
         registry = SkillRegistry()
         for name in skills:
             registry.register(name)
@@ -87,6 +92,11 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=1883)
     parser.add_argument("--state", default=None, help="JSON dict published once as initial state")
+    parser.add_argument(
+        "--ceilings",
+        default=None,
+        help="path to the operator ceiling JSON for pc.* skills (absent = fail-closed defaults)",
+    )
     args = parser.parse_args()
 
     state = json.loads(args.state) if args.state else None
@@ -100,7 +110,7 @@ def main() -> None:
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     try:
-        asyncio.run(run(args.node, args.key, args.host, args.port, state))
+        asyncio.run(run(args.node, args.key, args.host, args.port, state, args.ceilings))
     except KeyboardInterrupt:
         sys.exit(0)
 

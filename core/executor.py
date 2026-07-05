@@ -48,10 +48,31 @@ def _validate_paths(action: dict) -> tuple[bool, str | None]:
     return True, None
 
 
+# Real dispatch handlers (Priority #4 Milestone 6) -- until this registry,
+# execute-mode _dispatch() was a stub that claimed "executed: True" without
+# doing anything. Handlers are registered per tool name by whoever wires
+# real execution (jarvis_node_sdk/pc_skills.py registers the pc subset);
+# a tool with no registered handler keeps the historical stub behavior, so
+# every pre-existing kernel test and caller is unaffected.
+DISPATCH_HANDLERS: dict = {}
+
+
+def register_handler(name: str, fn) -> None:
+    """Register `fn(action: dict) -> dict` as the real executor for tool
+    `name`. The returned dict is merged into the dispatch result."""
+    if not name:
+        raise ValueError("tool name must be non-empty")
+    DISPATCH_HANDLERS[name] = fn
+
+
 def _dispatch(action: dict):
     if config.is_simulate():
         return {"executed": False, "simulated": True, "action": action}
     if config.is_execute():
+        handler = DISPATCH_HANDLERS.get(action.get("name"))
+        if handler is not None:
+            handler_result = handler(action)
+            return {"executed": True, "action": action, "result": handler_result}
         return {"executed": True, "action": action}
     raise ValueError("Invalid execution mode")
 

@@ -39,6 +39,23 @@ TOOLS: dict[str, dict] = {
         "param_types": {"path": str},
         "risk": "low",
     },
+    # Priority #4 Milestone 6 -- the PC skill subset's kernel-side tool
+    # entries (jarvis_node_sdk/pc_skills.py maps pc.* skills onto these).
+    "lock_device": {
+        "params": [],
+        "param_types": {},
+        "risk": "low",
+    },
+    "media_control": {
+        "params": ["command"],
+        "param_types": {"command": str},
+        "risk": "low",
+    },
+    "run_command": {
+        "params": ["command"],
+        "param_types": {"command": str},
+        "risk": "high",
+    },
 }
 
 
