@@ -23,7 +23,9 @@ import asyncio
 import json
 import sys
 
+from jarvis_node_sdk.capabilities import SkillRegistry, publish_capabilities
 from jarvis_node_sdk.command_listener import start_command_listener
+from jarvis_node_sdk.phone_skills import build_phone_skills
 from jarvis_node_sdk.presence_publisher import publish_presence, start_presence_heartbeat
 from jarvis_node_sdk.state_publisher import publish_state
 from jarvis_node_sdk.transport import MqttTransport
@@ -49,13 +51,24 @@ class _DemoMqttConfig:
 async def run(node: str, key: str, host: str, port: int, state: dict | None) -> None:
     cfg = _DemoMqttConfig(host, port, node)
     async with MqttTransport(cfg) as transport:
-        await start_command_listener(transport, key, node)
+        # Priority #4 M5: real skill table + capability declaration. On a
+        # non-Termux host the termux-gated skills honestly report
+        # {"ok": false, "error": "termux-api not installed"} -- the spine
+        # dispatch is real either way; real Termux success is the phone
+        # deployment milestone's concern.
+        skills = build_phone_skills()
+        registry = SkillRegistry()
+        for name in skills:
+            registry.register(name)
+        await start_command_listener(transport, key, node, skills=skills)
+        await publish_capabilities(transport, key, node, registry)
         await publish_presence(transport, key, node)
         if state is not None:
             await publish_state(transport, key, node, state)
         print(
             f"[demo-node] {node!r} connected to {host}:{port} -- "
-            f"listening on chimera/{node}/cmd, presence+state published.",
+            f"listening on chimera/{node}/cmd, {len(skills)} skills declared, "
+            f"presence+state published.",
             flush=True,
         )
         heartbeat = asyncio.create_task(

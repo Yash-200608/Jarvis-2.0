@@ -18,8 +18,9 @@ from __future__ import annotations
 
 from .capabilities import SkillRegistry, publish_capabilities
 from .chimera_contract import CONTRACT_VERSION, ChimeraEnvelope, RiskTier, sign, verify
-from .command_handler import handle_command
+from .command_handler import dispatch_command, handle_command, verify_command
 from .command_listener import start_command_listener
+from .phone_skills import build_phone_skills
 from .config import JarvisConfig, MqttConfig, load_config
 from .logging_setup import configure_logging, get_logger
 from .presence_publisher import publish_presence, start_presence_heartbeat
@@ -56,4 +57,7 @@ __all__ = [
     "publish_state",
     "SkillRegistry",
     "publish_capabilities",
+    "dispatch_command",
+    "verify_command",
+    "build_phone_skills",
 ]
