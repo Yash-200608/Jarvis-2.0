@@ -1,8 +1,14 @@
-"""Standalone live demo node -- Priority #3 Milestone 12 (Execution Spine
-Capstone). Connects a real MqttTransport to a real broker and wires
-together jarvis_node_sdk's command listener (M8) + presence heartbeat
-(M10), the minimum needed to prove the execution spine end-to-end against
-a live broker with at least one real command.
+"""Standalone live demo node -- DEV TOOL ONLY. The production entrypoint
+is run_chimera_node.py (config-sourced secrets, graceful shutdown); this
+script takes the HMAC key as a CLI flag, which leaks it into process
+lists and shell history -- fine for a throwaway dev session, never for a
+node that runs unattended.
+
+Originally Priority #3 Milestone 12 (Execution Spine Capstone): connects
+a real MqttTransport to a real broker and wires together
+jarvis_node_sdk's command listener + presence heartbeat, the minimum
+needed to prove the execution spine end-to-end against a live broker
+with at least one real command.
 
 Deliberately self-contained: does NOT call jarvis_node_sdk.config.load_config()
 or touch jarvis_core.yaml -- this demo doesn't depend on Ollama/memory/
