@@ -15,7 +15,8 @@ pkg install -y python termux-api
 
 echo "[2/4] Installing Python dependencies..."
 pip install --upgrade pip >/dev/null
-pip install aiomqtt paho-mqtt pydantic loguru python-dotenv pyyaml
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+pip install -r "$REPO_DIR/requirements-chimera-node.txt"
 
 echo "[3/4] Locating node code..."
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"

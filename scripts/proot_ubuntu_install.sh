@@ -26,12 +26,12 @@ python3 -m venv "$REPO_DIR/.venv-proot"
 source "$REPO_DIR/.venv-proot/bin/activate"
 python -m pip install --upgrade pip wheel >/dev/null
 
-echo "[3/5] Installing Python dependencies (pydantic + MQTT stack)..."
-pip install aiomqtt paho-mqtt pydantic loguru python-dotenv pyyaml
+echo "[3/5] Installing Python dependencies..."
+pip install -r "$REPO_DIR/requirements-chimera-node.txt"
 
 echo "[4/5] Verifying imports..."
 cd "$REPO_DIR"
-python -c "from jarvis_node_sdk.transport import MqttTransport; print('ok: jarvis_node_sdk')"
+python -c "from jarvis_node_sdk.capabilities import SkillRegistry; print('ok: chimera node deps')"
 
 ENV_FILE="$TERMUX_HOME/.chimera/node.env"
 if [ ! -f "$ENV_FILE" ]; then

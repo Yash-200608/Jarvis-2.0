@@ -1,0 +1,11 @@
+# Chimera node runtime (run_chimera_node.py + jarvis_node_sdk).
+# proot Ubuntu: pip install -r requirements-chimera-node.txt
+# Native Termux 3.14: use proot path; pydantic/psutil wheels may be unavailable.
+
+aiomqtt>=2.3.0
+paho-mqtt>=2.1.0
+pydantic>=2.8.0
+loguru>=0.7.2
+python-dotenv>=1.0.1
+PyYAML>=6.0.2
+psutil>=5.9.0
