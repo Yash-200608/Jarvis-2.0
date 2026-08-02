@@ -15,10 +15,17 @@ pkg update -y
 pkg install -y proot-distro
 
 echo "[2/3] Installing Ubuntu rootfs (skip if already present)..."
-if proot-distro list | grep -q "ubuntu"; then
+if proot-distro list 2>&1 | grep -qw ubuntu; then
   echo "  ubuntu already installed"
 else
-  proot-distro install ubuntu
+  proot-distro install ubuntu || {
+  if proot-distro list 2>&1 | grep -qw ubuntu; then
+    echo "  ubuntu already installed (install skipped)"
+  else
+    echo "Failed to install ubuntu rootfs." >&2
+    exit 1
+  fi
+  }
 fi
 
 if [ ! -f "$REPO_DIR/run_chimera_node.py" ]; then
