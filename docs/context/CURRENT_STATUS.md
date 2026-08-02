@@ -1,7 +1,16 @@
 # Current Status — Operational Snapshot
 
-Status: Priority #3 (execution spine) closed — see update below
-Last updated: 2026-07-04
+Status: Priority #3 closed; Priority #4 M10 done; M11 trial instrumentation added
+Last updated: 2026-08-02
+
+> **2026-08-02 update:** Brain M10 (invoke console, approvals, audit UI) is
+> live in git. M11 adds trial measurement: `GET /api/devices/trial-report`,
+> `scripts/trial_report.py`, dashboard trial panel; JARVIS
+> `legacy_invocation_log.py` logs awesome_chat device commands to
+> `~/.chimera/legacy_invocations.jsonl`. Demo checklist:
+> `Brain/docs/audits/PRIORITY-4-M11-KEYSTONE-DEMO-CHECKLIST.md`.
+> Restart helper: `Brain/scripts/start_chimera_stack.ps1`. M12 retirements
+> wait on a completed outcome-based trial.
 
 > This document is step 3 of the required session-start reading order — see [`context/AI_SESSION_BOOTSTRAP.md`](AI_SESSION_BOOTSTRAP.md) for the full ordered protocol (Vision → Brain Constitution → this document → Decision Log → Roadmap). Read it first if you haven't. Otherwise: this is the fastest way to know what actually runs today versus what is designed, dormant, or aspirational. For the target architecture see [architecture/SYSTEM_ARCHITECTURE.md](../architecture/SYSTEM_ARCHITECTURE.md); for how we got here see [context/DECISION_LOG.md](DECISION_LOG.md) and [context/DESIGN_HISTORY.md](DESIGN_HISTORY.md); for the phased plan see [roadmap/MASTER_ROADMAP.md](../roadmap/MASTER_ROADMAP.md).
 

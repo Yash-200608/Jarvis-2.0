@@ -4,6 +4,8 @@ from collections import defaultdict
 
 import requests
 
+from legacy_invocation_log import record_legacy_invocation
+
 
 class DeviceAdapter:
     def execute(self, action, params, confirmation_token=None):
@@ -100,7 +102,9 @@ class DeviceOrchestrator:
         action = command.get("action")
         params = command.get("params", {})
         confirmation_token = command.get("confirmation_token")
-        return adapter.execute(action, params, confirmation_token=confirmation_token)
+        result = adapter.execute(action, params, confirmation_token=confirmation_token)
+        record_legacy_invocation(command, result)
+        return result
 
     def execute_multi(self, commands):
         """
