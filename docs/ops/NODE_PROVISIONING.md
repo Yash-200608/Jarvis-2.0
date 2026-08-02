@@ -102,23 +102,70 @@ Physical steps only the operator can perform:
 1. Install **Termux** and **Termux:API** (F-Droid builds — Play Store
    builds are stale) and the Tailscale Android app; `tailscale up` and
    note the PC's Tailscale IP (the broker host).
-2. In Termux, run `scripts/termux_install.sh` from this repo (copy it over
-   or `curl` it from your own trusted source). It installs python +
-   dependencies, copies `jarvis_node_sdk/` + `run_chimera_node.py`, and
-   writes `~/.chimera/node.env` from your answers.
-3. Bind the PC's Mosquitto to the Tailscale interface (see §5), then:
-
-   ```sh
-   python run_chimera_node.py --env-file ~/.chimera/node.env
-   ```
-
+2. Bind the PC's Mosquitto to the Tailscale interface (see §5).
+3. Choose a runtime (§4a native Termux, or §4b proot Ubuntu when Termux
+   ships Python 3.14 and `pydantic` cannot install).
 4. Verify from the PC: the dashboard's Devices panel shows
    `nothing-phone-3a` online with its declared skills, and
    `phone.battery` answers with real battery data.
-5. **Auto-restart:** `pkg install termux-services`, then create
-   `~/.config/sv/chimera-node/run` execing the command above, and
-   `sv-enable chimera-node`. Also disable Android battery optimization for
-   Termux or Doze will kill the node.
+5. Disable Android battery optimization for Termux or Doze will kill the
+   node.
+
+### 4a. Native Termux (Python ≤ 3.13)
+
+When `python3 -V` reports 3.13 or older, use the direct path:
+
+```sh
+cd ~/Jarvis-2.0
+bash scripts/termux_install.sh
+python run_chimera_node.py --env-file ~/.chimera/node.env
+```
+
+On 3.13 without a pydantic wheel, try the prebuilt Android index first:
+
+```sh
+pip install pydantic-core==2.46.3 \
+  --extra-index-url https://eutalix.github.io/android-pydantic-core/
+pip install pydantic aiomqtt paho-mqtt loguru python-dotenv
+```
+
+**Auto-restart:** `pkg install termux-services`, then create
+`~/.config/sv/chimera-node/run` execing the command above, and
+`sv-enable chimera-node`.
+
+### 4b. proot Ubuntu (recommended when Termux is Python 3.14)
+
+Termux's default Python 3.14 has no `pydantic-core` wheel for Android;
+building from source with Rust fails on the `aarch64-linux-android` target.
+Ubuntu inside **proot-distro** uses normal `linux_aarch64` wheels instead.
+
+One-time setup (from native Termux, repo at `~/Jarvis-2.0`):
+
+```sh
+cd ~/Jarvis-2.0
+git pull   # needs scripts/termux_proot_setup.sh from this repo
+bash scripts/termux_proot_setup.sh
+```
+
+That installs `proot-distro` + Ubuntu, creates `.venv-proot`, installs
+dependencies, and reuses `~/.chimera/node.env` if you already created it.
+
+Start the node (always from **native Termux**, not inside the Ubuntu shell):
+
+```sh
+bash ~/Jarvis-2.0/scripts/run_chimera_proot.sh
+```
+
+`phone.*` skills call Termux:API binaries; the wrapper puts
+`/data/data/com.termux/files/usr/bin` on `PATH` inside proot so
+`termux-battery-status` and friends still work.
+
+**Auto-restart:** point a termux-services `run` script at
+`run_chimera_proot.sh` instead of `run_chimera_node.py`.
+
+**Stop the PC sim first:** if `nothing-phone-3a` is already running on the
+PC (sim env file), kill that process before starting the real phone node —
+duplicate MQTT client IDs fight each other.
 
 ## 5. Broker binding for Tailscale
 
