@@ -15,6 +15,8 @@ jarvis_core's legacy vars):
     CHIMERA_BROKER_PORT default 1883
     CHIMERA_CEILINGS    optional -- path to the operator ceiling JSON
                         (absent = pc_skills' fail-closed defaults)
+    CHIMERA_SKILL_SET   optional -- pc | phone | all (default: infer from
+                        CHIMERA_NODE_ID: "pc" in id → pc, "phone" → phone)
 
 Fail-closed: a missing required variable raises NodeConfigError with a
 message naming exactly what to set -- the node never starts half-configured.
@@ -37,6 +39,7 @@ class NodeConfig:
     broker_host: str = "127.0.0.1"
     broker_port: int = 1883
     ceilings_path: str | None = None
+    skill_set: str = "all"  # pc | phone | all
 
 
 def load_node_config(
@@ -72,10 +75,25 @@ def load_node_config(
     except ValueError:
         raise NodeConfigError(f"CHIMERA_BROKER_PORT must be an integer, got {port_raw!r}")
 
+    skill_set = environment.get("CHIMERA_SKILL_SET", "").strip().lower()
+    if not skill_set:
+        nid = node_id.lower()
+        if "phone" in nid:
+            skill_set = "phone"
+        elif "pc" in nid:
+            skill_set = "pc"
+        else:
+            skill_set = "all"
+    elif skill_set not in {"pc", "phone", "all"}:
+        raise NodeConfigError(
+            f"CHIMERA_SKILL_SET must be pc, phone, or all — got {skill_set!r}"
+        )
+
     return NodeConfig(
         node_id=node_id,
         hmac_key=hmac_key,
         broker_host=environment.get("CHIMERA_BROKER_HOST", "127.0.0.1").strip() or "127.0.0.1",
         broker_port=port,
         ceilings_path=environment.get("CHIMERA_CEILINGS", "").strip() or None,
+        skill_set=skill_set,
     )

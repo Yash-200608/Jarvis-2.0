@@ -187,7 +187,7 @@ def test_open_app_maps_known_names_to_packages() -> None:
 
     assert result["ok"] is True
     assert result["package"] == "com.whatsapp"
-    assert calls[0][0] == "monkey"
+    assert calls[0][0] == "am"
     assert "com.whatsapp" in calls[0]
 
 
@@ -198,6 +198,20 @@ def test_open_app_passes_unknown_name_through_as_package() -> None:
     result = asyncio.run(skills["phone.app.open"]({"app": "com.custom.app"}))
 
     assert result["package"] == "com.custom.app"
+    assert calls[0][0] == "am"
+
+
+def test_open_app_falls_back_to_monkey_when_am_fails() -> None:
+    runner, calls = _fake_runner(
+        {"am": {"exit_code": 1, "stdout": "", "stderr": "fail"}}
+    )
+    skills = _skills(runner)
+
+    result = asyncio.run(skills["phone.app.open"]({"app": "settings"}))
+
+    assert result["ok"] is True
+    assert calls[0][0] == "am"
+    assert calls[1][0] == "monkey"
 
 
 def test_whatsapp_send_sanitizes_phone_and_quotes_message() -> None:

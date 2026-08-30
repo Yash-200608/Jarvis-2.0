@@ -204,10 +204,19 @@ def build_phone_skills(
             "maps": "com.google.android.apps.maps",
         }
         pkg = PKGS.get(app.lower(), app)
+        # am start works from proot Ubuntu (monkey often does not).
         r = await runner(
-            "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1",
+            "am", "start",
+            "-a", "android.intent.action.MAIN",
+            "-c", "android.intent.category.LAUNCHER",
+            "-p", pkg,
             timeout=15,
         )
+        if r["exit_code"] != 0:
+            r = await runner(
+                "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1",
+                timeout=15,
+            )
         return {"ok": r["exit_code"] == 0, "package": pkg, **r}
 
     async def skill_whatsapp_send(params: dict) -> dict:

@@ -80,10 +80,15 @@ async def run_node(cfg: NodeConfig) -> None:
         pass
 
     async with MqttTransport(_NodeMqttConfig(cfg)) as transport:
-        skills = {
-            **build_phone_skills(),
-            **build_pc_skills(ceilings_path=cfg.ceilings_path),
-        }
+        if cfg.skill_set == "phone":
+            skills = build_phone_skills()
+        elif cfg.skill_set == "pc":
+            skills = build_pc_skills(ceilings_path=cfg.ceilings_path)
+        else:
+            skills = {
+                **build_phone_skills(),
+                **build_pc_skills(ceilings_path=cfg.ceilings_path),
+            }
         registry = SkillRegistry()
         for name in skills:
             registry.register(name)
