@@ -25,12 +25,63 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shlex
 import shutil
 import urllib.parse
+import xml.etree.ElementTree as ET
 from typing import Any, Awaitable, Callable
 
 SkillFn = Callable[[dict], Awaitable[dict]]
 Runner = Callable[..., Awaitable[dict]]
+
+# Activity Manager calls from proot Ubuntu print "Starting: Intent" but fail with
+# SecurityException — route them through native Termux bash instead.
+TERMUX_BASH = "/data/data/com.termux/files/usr/bin/bash"
+TERMUX_PREFIX_BIN = "/data/data/com.termux/files/usr/bin"
+ANDROID_SYSTEM_BIN = "/system/bin:/system/xbin"
+_NATIVE_SHELL_BINARIES = frozenset({
+    "am", "monkey", "cmd", "termux-open", "input", "wm", "uiautomator", "cat", "rm", "adb",
+})
+
+_WHATSAPP_PKG = "com.whatsapp"
+_UI_DUMP_PATH = "/sdcard/jarvis_ui.xml"
+_SEND_NEGATIVE = (
+    "feedback", "report", "reset", "sender", "resend",
+    "location", "photo", "file", "sticker", "voice note", "audio",
+    "gif", "attachment", "emoji", "camera",
+)
+_SEND_POSITIVE_IDS = (
+    "send_btn", "send_button", "sendbtn", "btn_send",
+    "entry_send", "conversation_send", "composer_send",
+    "action_send", "iv_send", "ib_send", "com.whatsapp:id/send",
+)
+_COMPOSE_FIELD_IDS = (
+    "com.whatsapp:id/entry", "com.whatsapp:id/input", "com.whatsapp:id/entry_text",
+    "edittext", "message",
+)
+_CONTINUE_CHAT_MARKERS = ("continue to chat", "continue toChat", "message ", "send message")
+
+
+def _launch_ok(result: dict) -> bool:
+    combined = (result.get("stdout") or "") + (result.get("stderr") or "")
+    if any(
+        marker in combined
+        for marker in (
+            "SecurityException",
+            "Permission Denial",
+            "InvocationTargetException",
+        )
+    ):
+        return False
+    if result.get("exit_code") == 0:
+        return True
+    return "Starting: Intent" in combined or "Status: ok" in combined
+
+
+def _inject_am_user(argv: list[str]) -> list[str]:
+    if len(argv) >= 2 and argv[0] == "am" and argv[1] == "start" and "--user" not in argv:
+        return ["am", "start", "--user", "0", *argv[2:]]
+    return argv
 
 
 async def sh(*argv: str, timeout: float = 15.0) -> dict[str, Any]:
@@ -58,12 +109,407 @@ async def sh(*argv: str, timeout: float = 15.0) -> dict[str, Any]:
         return {"exit_code": -1, "stdout": "", "stderr": f"{type(e).__name__}: {e}"}
 
 
+async def termux_android_runner(*argv: str, timeout: float = 15.0) -> dict[str, Any]:
+    """Run Android shell tools in native Termux (proot cannot start activities)."""
+    args = list(argv)
+    if args and args[0] in _NATIVE_SHELL_BINARIES:
+        if args[0] == "am":
+            args = _inject_am_user(args)
+        cmd = (
+            f"export PATH={TERMUX_PREFIX_BIN}:{ANDROID_SYSTEM_BIN}:$PATH; exec "
+            + " ".join(shlex.quote(a) for a in args)
+        )
+        return await sh(TERMUX_BASH, "-c", cmd, timeout=timeout)
+    return await sh(*argv, timeout=timeout)
+
+
+async def _adb_has_device(runner: Runner) -> bool:
+    r = await runner("adb", "devices", timeout=8)
+    if r["exit_code"] != 0:
+        return False
+    return any("\tdevice" in ln for ln in (r.get("stdout") or "").splitlines())
+
+
+async def _device_shell(
+    runner: Runner, use_adb: bool, *cmd: str, timeout: float = 10.0
+) -> dict[str, Any]:
+    if use_adb:
+        return await runner("adb", "shell", *cmd, timeout=timeout)
+    return await runner(*cmd, timeout=timeout)
+
+
+def _input_text_arg(message: str) -> str:
+    """Format text for `adb shell input text` (spaces -> %s)."""
+    escaped = message.replace("\\", "\\\\").replace("%", "\\%").replace("'", "\\'")
+    return escaped.replace(" ", "%s")
+
+
+async def _read_ui_dump(runner: Runner, *, use_adb: bool) -> str:
+    await _device_shell(runner, use_adb, "uiautomator", "dump", _UI_DUMP_PATH, timeout=12)
+    r = await _device_shell(runner, use_adb, "cat", _UI_DUMP_PATH, timeout=10)
+    await _device_shell(runner, use_adb, "rm", "-f", _UI_DUMP_PATH, timeout=5)
+    return (r.get("stdout") or "").strip()
+
+
 def _default_have(binary: str) -> bool:
     return shutil.which(binary) is not None
 
 
+def _looks_like_phone(value: str) -> bool:
+    cleaned = re.sub(r"[\s\-().]", "", value.strip())
+    return bool(re.match(r"^\+?\d[\d]{5,}$", cleaned))
+
+
+def _normalize_phone_key(number: str) -> str:
+    """Digits-only key for deduping the same number across Gmail/sync duplicates."""
+    digits = re.sub(r"\D", "", number).lstrip("0") or re.sub(r"\D", "", number)
+    # Same contact often appears as +91…, 91…, and local 10-digit — keep last 10.
+    if len(digits) >= 10:
+        return digits[-10:]
+    return digits
+
+
+def _contact_match_score(name: str, needle: str) -> tuple[int, str]:
+    nl, nq = name.lower().strip(), needle.lower().strip()
+    if nl == nq:
+        return (0, nl)
+    if nl.startswith(nq):
+        return (1, nl)
+    return (2, nl)
+
+
+def _dedupe_and_rank_contacts(matches: list[dict[str, str]], needle: str) -> list[dict[str, str]]:
+    """Collapse duplicate numbers; prefer exact name match, then prefix, then contains."""
+    ranked = sorted(
+        matches,
+        key=lambda m: _contact_match_score(m["name"], needle),
+    )
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for contact in ranked:
+        key = _normalize_phone_key(contact["number"])
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(contact)
+    return unique
+
+
+def _parse_contact_list(stdout: str, needle: str) -> list[dict[str, str]]:
+    """Match contacts whose display name contains ``needle`` (case-insensitive)."""
+    try:
+        rows = json.loads(stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(rows, list):
+        return []
+    q = needle.lower().strip()
+    matches: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name", "")).strip()
+        number = str(row.get("number", "")).strip()
+        if q in name.lower() and number:
+            matches.append({"name": name, "number": number})
+    return matches
+
+
+async def _lookup_contacts(
+    name: str,
+    runner: Runner,
+    *,
+    has_termux: bool,
+    have: Callable[[str], bool],
+) -> list[dict[str, str]]:
+    if not has_termux or not have("termux-contact-list"):
+        return []
+    r = await runner("termux-contact-list", timeout=20)
+    if r["exit_code"] != 0:
+        return []
+    return _parse_contact_list(r.get("stdout") or "", name)
+
+
+def _shell_error(result: dict) -> str | None:
+    if result.get("exit_code") == 0:
+        return None
+    detail = (result.get("stderr") or result.get("stdout") or "").strip()
+    return detail or "command failed"
+
+
+async def _resolve_recipient(
+    params: dict,
+    runner: Runner,
+    *,
+    has_termux: bool,
+    have: Callable[[str], bool],
+) -> tuple[str | None, dict[str, Any] | None, str | None]:
+    """Resolve phone number from ``phone``, ``name``, or ``recipient`` param."""
+    recipient = str(
+        params.get("phone") or params.get("name") or params.get("recipient") or ""
+    ).strip()
+    if not recipient:
+        return None, None, "phone, name, or recipient + message required"
+    if _looks_like_phone(recipient):
+        return recipient, None, None
+    matches = await _lookup_contacts(recipient, runner, has_termux=has_termux, have=have)
+    if not matches:
+        return None, None, f"no contact found matching '{recipient}'"
+    unique = _dedupe_and_rank_contacts(matches, recipient)
+    if not unique:
+        return None, None, f"no contact with a usable number matching '{recipient}'"
+
+    try:
+        pick = int(params.get("index", 0))
+    except (TypeError, ValueError):
+        pick = 0
+    if pick < 0 or pick >= len(unique):
+        return None, None, f"index {pick} out of range (0-{len(unique) - 1})"
+
+    chosen = unique[pick]
+    resolved: dict[str, Any] = {"name": chosen["name"], "number": chosen["number"]}
+    alternates = [u for i, u in enumerate(unique) if i != pick]
+    if alternates:
+        resolved["alternates"] = [
+            {"name": alt["name"], "number": alt["number"]} for alt in alternates[:5]
+        ]
+        if len(alternates) > 5:
+            resolved["alternates_note"] = f"+{len(alternates) - 5} more numbers"
+    return chosen["number"], resolved, None
+
+
+def _whatsapp_digits(number: str) -> str:
+    """E.164 digits only — WhatsApp URIs reject '+'."""
+    return re.sub(r"\D", "", number)
+
+
+async def _get_screen_size(runner: Runner, *, use_adb: bool) -> tuple[int | None, int | None]:
+    r = await _device_shell(runner, use_adb, "wm", "size", timeout=5)
+    if r["exit_code"] != 0:
+        return None, None
+    out = r.get("stdout") or ""
+    override = re.search(r"Override size:\s*(\d+)\s*x\s*(\d+)", out, re.IGNORECASE)
+    if override:
+        return int(override.group(1)), int(override.group(2))
+    physical = re.search(r"Physical size:\s*(\d+)\s*x\s*(\d+)", out, re.IGNORECASE)
+    if physical:
+        return int(physical.group(1)), int(physical.group(2))
+    generic = re.search(r"(\d+)\s*x\s*(\d+)", out)
+    if generic:
+        return int(generic.group(1)), int(generic.group(2))
+    return None, None
+
+
+def _node_center(bounds: str) -> tuple[int, int] | None:
+    nums = re.findall(r"\d+", bounds)
+    if len(nums) < 4:
+        return None
+    x1, y1, x2, y2 = (int(n) for n in nums[:4])
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return (x1 + x2) // 2, (y1 + y2) // 2
+
+
+async def _tap_xy(
+    runner: Runner, *, use_adb: bool, x: int, y: int
+) -> tuple[bool, str]:
+    r = await _device_shell(
+        runner, use_adb, "input", "tap", str(x), str(y), timeout=5
+    )
+    if r["exit_code"] == 0:
+        return True, f"tap ({x},{y})"
+    detail = (r.get("stderr") or r.get("stdout") or "").strip()
+    return False, detail or "tap failed"
+
+
+async def _tap_ui_targets(
+    runner: Runner,
+    *,
+    use_adb: bool,
+    match_fn,
+    retries: int = 3,
+    delay: float = 1.0,
+) -> tuple[bool, str]:
+    for attempt in range(retries):
+        xml_content = await _read_ui_dump(runner, use_adb=use_adb)
+        if xml_content and "<hierarchy" in xml_content:
+            try:
+                root = ET.fromstring(xml_content)
+                best: tuple[int, int, int, str] | None = None
+                for node in root.iter():
+                    hit = match_fn(node)
+                    if not hit:
+                        continue
+                    score, label = hit
+                    center = _node_center(node.get("bounds", ""))
+                    if center is None:
+                        continue
+                    cx, cy = center
+                    cand = (score, cx, cy, label)
+                    if best is None or cand[0] > best[0]:
+                        best = cand
+                if best:
+                    _, cx, cy, label = best
+                    ok, detail = await _tap_xy(runner, use_adb=use_adb, x=cx, y=cy)
+                    if ok:
+                        return True, f"{label} @ ({cx},{cy})"
+            except ET.ParseError:
+                pass
+        if attempt < retries - 1:
+            await asyncio.sleep(delay)
+    return False, "ui target not found"
+
+
+def _match_continue_chat(node: ET.Element) -> tuple[int, str] | None:
+    desc = (node.get("content-desc") or "").lower()
+    text = (node.get("text") or "").lower()
+    hay = f"{desc} {text}"
+    if any(m in hay for m in _CONTINUE_CHAT_MARKERS) and (node.get("clickable") or "").lower() == "true":
+        return 20, "continue-to-chat"
+    if "continue" in hay and "chat" in hay:
+        return 15, "continue-to-chat"
+    return None
+
+
+def _match_compose_field(node: ET.Element, height: int | None) -> tuple[int, str] | None:
+    res_id = (node.get("resource-id") or "").lower()
+    clazz = (node.get("class") or "").lower()
+    desc = (node.get("content-desc") or "").lower()
+    score = 0
+    if any(fid in res_id for fid in _COMPOSE_FIELD_IDS):
+        score += 15
+    if "edittext" in clazz:
+        score += 8
+    if "type a message" in desc or "message" in desc:
+        score += 5
+    if score <= 0:
+        return None
+    center = _node_center(node.get("bounds", ""))
+    if center and height and center[1] > int(height * 0.55):
+        score += 4
+    return score, "compose-field"
+
+
+def _match_send_button(
+    node: ET.Element, width: int | None, height: int | None
+) -> tuple[int, str] | None:
+    desc = (node.get("content-desc") or "").lower()
+    text = (node.get("text") or "").lower()
+    res_id = (node.get("resource-id") or "").lower()
+    clickable = (node.get("clickable") or "").lower() == "true"
+    haystack = f"{desc} {text} {res_id}"
+    if "send" not in haystack:
+        return None
+    if any(neg in haystack for neg in _SEND_NEGATIVE):
+        return None
+    center = _node_center(node.get("bounds", ""))
+    if center is None:
+        return None
+    cx, cy = center
+    score = 0
+    if any(p in res_id for p in _SEND_POSITIVE_IDS):
+        score += 10
+    if desc.strip() in ("send", "send message", "send button"):
+        score += 6
+    if text.strip() == "send":
+        score += 4
+    if clickable:
+        score += 4
+    if height and cy > int(height * 0.60):
+        score += 3
+    if width and cx > int(width * 0.50):
+        score += 2
+    if score <= 0:
+        return None
+    return score, f"send id='{res_id or desc or text}'"
+
+
+async def _tap_send_button(runner: Runner, *, use_adb: bool, retries: int = 3) -> tuple[bool, str]:
+    width, height = await _get_screen_size(runner, use_adb=use_adb)
+    ok, detail = await _tap_ui_targets(
+        runner,
+        use_adb=use_adb,
+        retries=retries,
+        match_fn=lambda n: _match_send_button(n, width, height),
+    )
+    if ok:
+        return ok, detail
+    if width and height:
+        tap_x, tap_y = int(width * 0.92), int(height * 0.92)
+        ok2, detail2 = await _tap_xy(runner, use_adb=use_adb, x=tap_x, y=tap_y)
+        if ok2:
+            return True, f"screen_calc ({tap_x},{tap_y}) on {width}x{height}"
+    return False, detail or "send_button_not_found"
+
+
+async def _compose_and_type(
+    runner: Runner, *, use_adb: bool, message: str
+) -> tuple[bool, str]:
+    width, height = await _get_screen_size(runner, use_adb=use_adb)
+    await _tap_ui_targets(
+        runner,
+        use_adb=use_adb,
+        retries=2,
+        match_fn=lambda n: _match_continue_chat(n),
+    )
+    await asyncio.sleep(0.8)
+    tapped, tap_detail = await _tap_ui_targets(
+        runner,
+        use_adb=use_adb,
+        retries=3,
+        match_fn=lambda n: _match_compose_field(n, height),
+    )
+    if not tapped and width and height:
+        cx, cy = int(width * 0.5), int(height * 0.88)
+        tapped, tap_detail = await _tap_xy(runner, use_adb=use_adb, x=cx, y=cy)
+    if not tapped:
+        return False, f"compose field not focused ({tap_detail})"
+    await asyncio.sleep(0.4)
+    r = await _device_shell(
+        runner, use_adb, "input", "text", _input_text_arg(message), timeout=12
+    )
+    if r["exit_code"] == 0:
+        return True, "typed via input text"
+    detail = (r.get("stderr") or r.get("stdout") or "").strip()
+    return False, detail or "input text failed"
+
+
+async def _open_whatsapp_compose(runner: Runner, phone_digits: str, message: str) -> dict[str, Any]:
+    """Open WhatsApp chat — jid SEND first (best pre-fill on device)."""
+    encoded = urllib.parse.quote(message)
+    jid = f"{phone_digits}@s.whatsapp.net"
+    attempts = [
+        (
+            "am", "start",
+            "-a", "android.intent.action.SEND",
+            "-t", "text/plain",
+            "--es", "android.intent.extra.TEXT", message,
+            "--es", "jid", jid,
+            "-p", _WHATSAPP_PKG,
+        ),
+        (
+            "am", "start",
+            "-a", "android.intent.action.VIEW",
+            "-d", f"whatsapp://send?phone={phone_digits}&text={encoded}",
+            "-p", _WHATSAPP_PKG,
+        ),
+        (
+            "am", "start",
+            "-a", "android.intent.action.VIEW",
+            "-d", f"https://wa.me/{phone_digits}?text={encoded}",
+            "-p", _WHATSAPP_PKG,
+        ),
+    ]
+    last: dict[str, Any] = {"exit_code": -1, "stdout": "", "stderr": "no attempt"}
+    for argv in attempts:
+        last = await runner(*argv, timeout=15)
+        if _launch_ok(last):
+            return last
+    return last
+
+
 def build_phone_skills(
-    runner: Runner = sh, have: Callable[[str], bool] = _default_have
+    runner: Runner = termux_android_runner, have: Callable[[str], bool] = _default_have
 ) -> dict[str, SkillFn]:
     """Builds the phone.* skill table, closing over `runner` (the shell
     boundary) and a Termux capability check evaluated once at build time
@@ -116,14 +562,24 @@ def build_phone_skills(
         return {"ok": r["exit_code"] == 0, **r}
 
     async def skill_sms_send(params: dict) -> dict:
-        phone = str(params.get("phone", "")).strip()
         message = str(params.get("message", "")).strip()
-        if not phone or not message:
-            return {"ok": False, "error": "phone + message required"}
+        if not message:
+            return {"ok": False, "error": "message required"}
         if not has_termux:
             return {"ok": False, "error": "termux-api not installed"}
-        r = await runner("termux-sms-send", "-n", phone, message, timeout=20)
-        return {"ok": r["exit_code"] == 0, "phone": phone, **r}
+        number, resolved, err = await _resolve_recipient(
+            params, runner, has_termux=has_termux, have=have
+        )
+        if err:
+            return {"ok": False, "error": err}
+        r = await runner("termux-sms-send", "-n", number, message, timeout=20)
+        ok = r["exit_code"] == 0
+        out: dict[str, Any] = {"ok": ok, "phone": number, "message": message}
+        if not ok:
+            out["error"] = _shell_error(r)
+        if resolved:
+            out["resolved_contact"] = resolved
+        return out
 
     async def skill_torch(params: dict) -> dict:
         on = bool(params.get("on", True))
@@ -205,13 +661,7 @@ def build_phone_skills(
         }
         pkg = PKGS.get(app.lower(), app)
 
-        def _launch_ok(result: dict) -> bool:
-            if result.get("exit_code") == 0:
-                return True
-            combined = (result.get("stdout") or "") + (result.get("stderr") or "")
-            return "Starting: Intent" in combined or "Status: ok" in combined
-
-        # am start works from proot Ubuntu; monkey is often absent there.
+        # am start must run in native Termux (see termux_android_runner).
         r = await runner(
             "am", "start",
             "-a", "android.intent.action.MAIN",
@@ -240,16 +690,74 @@ def build_phone_skills(
         return {"ok": _launch_ok(r), "package": pkg, **r}
 
     async def skill_whatsapp_send(params: dict) -> dict:
-        phone = re.sub(r"[^\d+]", "", str(params.get("phone", "")))
-        msg = str(params.get("message", ""))
-        if not phone or not msg:
-            return {"ok": False, "error": "phone + message required"}
-        url = f"https://api.whatsapp.com/send?phone={phone}&text={urllib.parse.quote(msg)}"
-        r = await runner(
-            "am", "start", "-a", "android.intent.action.VIEW", "-d", url, timeout=15
+        msg = str(params.get("message", "")).strip()
+        if not msg:
+            return {"ok": False, "error": "message required"}
+        auto_send = params.get("auto_send", True)
+        if isinstance(auto_send, str):
+            auto_send = auto_send.lower() not in ("0", "false", "no")
+        number, resolved, err = await _resolve_recipient(
+            params, runner, has_termux=has_termux, have=have
         )
-        return {"ok": r["exit_code"] == 0, **r,
-                "note": "composer opened — user must tap send"}
+        if err:
+            return {"ok": False, "error": err}
+        phone_digits = _whatsapp_digits(number or "")
+        if len(phone_digits) < 8:
+            return {"ok": False, "error": "invalid phone number for WhatsApp"}
+
+        r = await _open_whatsapp_compose(runner, phone_digits, msg)
+        if not _launch_ok(r):
+            return {
+                "ok": False,
+                "error": _shell_error(r) or "could not open WhatsApp",
+                "phone": phone_digits,
+            }
+
+        out: dict[str, Any] = {
+            "ok": True,
+            "phone": phone_digits,
+            "message": msg,
+            "sent": False,
+        }
+        if resolved:
+            out["resolved_contact"] = resolved
+
+        if not auto_send:
+            out["note"] = "WhatsApp opened — tap Send on your phone"
+            return out
+
+        use_adb = await _adb_has_device(runner)
+        if not use_adb:
+            out["ok"] = False
+            out["error"] = (
+                "WhatsApp auto-send needs Wireless Debugging + adb connect on the phone"
+            )
+            out["hint"] = (
+                "On the phone: Developer options -> Wireless debugging ON, then run "
+                "bash ~/Jarvis-2.0/scripts/setup_whatsapp_adb.sh — or use phone.sms.send "
+                "for fully automatic text delivery"
+            )
+            return out
+
+        await asyncio.sleep(4.0)
+        typed, type_detail = await _compose_and_type(runner, use_adb=use_adb, message=msg)
+        if not typed:
+            out["ok"] = False
+            out["error"] = f"Could not type message in WhatsApp ({type_detail})"
+            return out
+
+        await asyncio.sleep(0.8)
+        tapped, method = await _tap_send_button(runner, use_adb=use_adb)
+        if tapped:
+            out["sent"] = True
+            out["send_method"] = method
+            out["typed"] = type_detail
+            return out
+
+        out["ok"] = False
+        out["error"] = "Message typed but Send button could not be tapped"
+        out["hint"] = "Check WhatsApp is on the chat screen and retry"
+        return out
 
     return {
         "phone.battery": skill_battery,
