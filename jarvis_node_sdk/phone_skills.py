@@ -60,6 +60,7 @@ _COMPOSE_FIELD_IDS = (
     "edittext", "message",
 )
 _CONTINUE_CHAT_MARKERS = ("continue to chat", "continue toChat", "message ", "send message")
+_COMPOSE_PLACEHOLDERS = frozenset({"message", "type a message"})
 
 
 def _launch_ok(result: dict) -> bool:
@@ -149,6 +150,89 @@ async def _read_ui_dump(runner: Runner, *, use_adb: bool) -> str:
     r = await _device_shell(runner, use_adb, "cat", _UI_DUMP_PATH, timeout=10)
     await _device_shell(runner, use_adb, "rm", "-f", _UI_DUMP_PATH, timeout=5)
     return (r.get("stdout") or "").strip()
+
+
+def _normalize_compose_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _compose_text_from_xml(xml_content: str) -> str:
+    if not xml_content or "<hierarchy" not in xml_content:
+        return ""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return ""
+    parts: list[str] = []
+    for node in root.iter():
+        res_id = (node.get("resource-id") or "").lower()
+        clazz = (node.get("class") or "").lower()
+        if not (
+            any(fid in res_id for fid in _COMPOSE_FIELD_IDS)
+            or "edittext" in clazz
+        ):
+            continue
+        text = (node.get("text") or "").strip()
+        if text and _normalize_compose_text(text) not in _COMPOSE_PLACEHOLDERS:
+            parts.append(text)
+    return " ".join(parts)
+
+
+async def _read_compose_text(runner: Runner, *, use_adb: bool) -> str:
+    xml_content = await _read_ui_dump(runner, use_adb=use_adb)
+    return _compose_text_from_xml(xml_content)
+
+
+def _message_present_in_compose(compose_text: str, message: str) -> bool:
+    compose_n = _normalize_compose_text(compose_text)
+    msg_n = _normalize_compose_text(message)
+    if not msg_n:
+        return False
+    if msg_n in compose_n:
+        return True
+    # Intent pre-fill may truncate or drop punctuation; match a long prefix.
+    prefix = msg_n[: min(24, len(msg_n))]
+    return len(prefix) >= 8 and prefix in compose_n
+
+
+async def _verify_message_sent(
+    runner: Runner, *, use_adb: bool, message: str, had_text_before: bool
+) -> bool:
+    """True when compose no longer contains the outgoing message."""
+    if not had_text_before:
+        return False
+    await asyncio.sleep(0.7)
+    compose_after = await _read_compose_text(runner, use_adb=use_adb)
+    return not _message_present_in_compose(compose_after, message)
+
+
+async def _attempt_send_actions(
+    runner: Runner,
+    *,
+    use_adb: bool,
+    width: int | None,
+    height: int | None,
+    retries: int,
+) -> list[str]:
+    """Run tap / enter / coordinate attempts; return methods tried."""
+    tried: list[str] = []
+    ok, detail = await _tap_ui_targets(
+        runner,
+        use_adb=use_adb,
+        retries=retries,
+        match_fn=lambda n: _match_send_button(n, width, height),
+    )
+    if ok:
+        tried.append(detail)
+    r = await _device_shell(runner, use_adb, "input", "keyevent", "66", timeout=5)
+    if r["exit_code"] == 0:
+        tried.append("keyevent ENTER")
+    if width and height:
+        tap_x, tap_y = int(width * 0.95), int(height * 0.66)
+        ok2, detail2 = await _tap_xy(runner, use_adb=use_adb, x=tap_x, y=tap_y)
+        if ok2:
+            tried.append(f"screen_calc ({tap_x},{tap_y}) on {width}x{height}")
+    return tried
 
 
 def _default_have(binary: str) -> bool:
@@ -424,27 +508,59 @@ def _match_send_button(
     return score, f"send id='{res_id or desc or text}'"
 
 
-async def _tap_send_button(runner: Runner, *, use_adb: bool, retries: int = 3) -> tuple[bool, str]:
+async def _tap_send_button(
+    runner: Runner,
+    *,
+    use_adb: bool,
+    message: str,
+    had_text_before: bool,
+    retries: int = 3,
+) -> tuple[bool, str]:
     width, height = await _get_screen_size(runner, use_adb=use_adb)
-    ok, detail = await _tap_ui_targets(
-        runner,
-        use_adb=use_adb,
-        retries=retries,
-        match_fn=lambda n: _match_send_button(n, width, height),
+    tried = await _attempt_send_actions(
+        runner, use_adb=use_adb, width=width, height=height, retries=retries
     )
-    if ok:
-        return ok, detail
+    if await _verify_message_sent(
+        runner, use_adb=use_adb, message=message, had_text_before=had_text_before
+    ):
+        return True, tried[0] if tried else "verified send"
+    return False, "send not verified — message still in compose field"
+
+
+def _find_entry_center(xml_content: str) -> tuple[int, int] | None:
+    if not xml_content or "<hierarchy" not in xml_content:
+        return None
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+    for node in root.iter():
+        res_id = node.get("resource-id") or ""
+        if not res_id.endswith("/entry") and "com.whatsapp:id/entry" not in res_id:
+            continue
+        return _node_center(node.get("bounds", ""))
+    return None
+
+
+async def _tap_whatsapp_entry(
+    runner: Runner, *, use_adb: bool, width: int | None, height: int | None
+) -> tuple[bool, str]:
+    xml_content = await _read_ui_dump(runner, use_adb=use_adb)
+    center = _find_entry_center(xml_content)
+    if center:
+        ok, detail = await _tap_xy(runner, use_adb=use_adb, x=center[0], y=center[1])
+        if ok:
+            return True, f"entry @ ({center[0]},{center[1]})"
     if width and height:
-        tap_x, tap_y = int(width * 0.92), int(height * 0.92)
-        ok2, detail2 = await _tap_xy(runner, use_adb=use_adb, x=tap_x, y=tap_y)
-        if ok2:
-            return True, f"screen_calc ({tap_x},{tap_y}) on {width}x{height}"
-    return False, detail or "send_button_not_found"
+        cx, cy = int(width * 0.45), int(height * 0.64)
+        return await _tap_xy(runner, use_adb=use_adb, x=cx, y=cy)
+    return False, "entry not found"
 
 
 async def _compose_and_type(
     runner: Runner, *, use_adb: bool, message: str
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
+    """Return (typed_ok, detail, had_text_before_send)."""
     width, height = await _get_screen_size(runner, use_adb=use_adb)
     await _tap_ui_targets(
         runner,
@@ -453,40 +569,39 @@ async def _compose_and_type(
         match_fn=lambda n: _match_continue_chat(n),
     )
     await asyncio.sleep(0.8)
-    tapped, tap_detail = await _tap_ui_targets(
-        runner,
-        use_adb=use_adb,
-        retries=3,
-        match_fn=lambda n: _match_compose_field(n, height),
+
+    compose_before = await _read_compose_text(runner, use_adb=use_adb)
+    if _message_present_in_compose(compose_before, message):
+        return True, "pre-filled from intent", True
+
+    tapped, tap_detail = await _tap_whatsapp_entry(
+        runner, use_adb=use_adb, width=width, height=height
     )
-    if not tapped and width and height:
-        cx, cy = int(width * 0.5), int(height * 0.88)
-        tapped, tap_detail = await _tap_xy(runner, use_adb=use_adb, x=cx, y=cy)
     if not tapped:
-        return False, f"compose field not focused ({tap_detail})"
-    await asyncio.sleep(0.4)
+        return False, f"compose field not focused ({tap_detail})", False
+
+    await asyncio.sleep(0.5)
     r = await _device_shell(
         runner, use_adb, "input", "text", _input_text_arg(message), timeout=12
     )
-    if r["exit_code"] == 0:
-        return True, "typed via input text"
-    detail = (r.get("stderr") or r.get("stdout") or "").strip()
-    return False, detail or "input text failed"
+    if r["exit_code"] != 0:
+        detail = (r.get("stderr") or r.get("stdout") or "").strip()
+        return False, detail or "input text failed", False
+
+    await asyncio.sleep(0.5)
+    compose_after = await _read_compose_text(runner, use_adb=use_adb)
+    if _message_present_in_compose(compose_after, message):
+        return True, "typed via input text", True
+    if compose_after.strip():
+        return True, "compose has text (partial match)", True
+    return False, "typed but compose field still empty", False
 
 
 async def _open_whatsapp_compose(runner: Runner, phone_digits: str, message: str) -> dict[str, Any]:
-    """Open WhatsApp chat — jid SEND first (best pre-fill on device)."""
+    """Open WhatsApp chat with message pre-filled — direct chat URI first."""
     encoded = urllib.parse.quote(message)
     jid = f"{phone_digits}@s.whatsapp.net"
     attempts = [
-        (
-            "am", "start",
-            "-a", "android.intent.action.SEND",
-            "-t", "text/plain",
-            "--es", "android.intent.extra.TEXT", message,
-            "--es", "jid", jid,
-            "-p", _WHATSAPP_PKG,
-        ),
         (
             "am", "start",
             "-a", "android.intent.action.VIEW",
@@ -497,6 +612,14 @@ async def _open_whatsapp_compose(runner: Runner, phone_digits: str, message: str
             "am", "start",
             "-a", "android.intent.action.VIEW",
             "-d", f"https://wa.me/{phone_digits}?text={encoded}",
+            "-p", _WHATSAPP_PKG,
+        ),
+        (
+            "am", "start",
+            "-a", "android.intent.action.SEND",
+            "-t", "text/plain",
+            "--es", "android.intent.extra.TEXT", message,
+            "--es", "jid", jid,
             "-p", _WHATSAPP_PKG,
         ),
     ]
@@ -740,14 +863,19 @@ def build_phone_skills(
             return out
 
         await asyncio.sleep(4.0)
-        typed, type_detail = await _compose_and_type(runner, use_adb=use_adb, message=msg)
+        typed, type_detail, had_text = await _compose_and_type(
+            runner, use_adb=use_adb, message=msg
+        )
         if not typed:
             out["ok"] = False
             out["error"] = f"Could not type message in WhatsApp ({type_detail})"
+            out["hint"] = "Open WhatsApp to the chat screen and retry, or use auto_send:false"
             return out
 
         await asyncio.sleep(0.8)
-        tapped, method = await _tap_send_button(runner, use_adb=use_adb)
+        tapped, method = await _tap_send_button(
+            runner, use_adb=use_adb, message=msg, had_text_before=had_text
+        )
         if tapped:
             out["sent"] = True
             out["send_method"] = method
@@ -755,8 +883,9 @@ def build_phone_skills(
             return out
 
         out["ok"] = False
-        out["error"] = "Message typed but Send button could not be tapped"
-        out["hint"] = "Check WhatsApp is on the chat screen and retry"
+        out["error"] = "Message in compose but Send could not be verified"
+        out["hint"] = method or "Check WhatsApp chat — tap Send manually"
+        out["typed"] = type_detail
         return out
 
     return {

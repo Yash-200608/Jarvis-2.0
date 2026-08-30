@@ -272,14 +272,19 @@ def _whatsapp_adb_runner(responses: dict[str, dict] | None = None):
     """Runner that simulates adb-connected device for WhatsApp automation tests."""
     calls: list[tuple] = []
     responses = responses or {}
-    ui_xml = (
-        '<?xml version="1.0"?><hierarchy>'
-        '<node class="android.widget.EditText" resource-id="com.whatsapp:id/entry" '
-        'content-desc="Type a message" bounds="[100,2100][980,2300]"/>'
-        '<node clickable="true" resource-id="com.whatsapp:id/send" '
-        'content-desc="Send" bounds="[950,2200][1050,2300]"/>'
-        "</hierarchy>"
-    )
+    compose_text = {"value": ""}
+
+    def _ui_xml() -> str:
+        text_attr = f' text="{compose_text["value"]}"' if compose_text["value"] else ""
+        return (
+            '<?xml version="1.0"?><hierarchy>'
+            f'<node class="android.widget.EditText" resource-id="com.whatsapp:id/entry"'
+            f' content-desc="Type a message" bounds="[100,2100][980,2300]"{text_attr}/>'
+            '<node clickable="true" resource-id="com.whatsapp:id/send" '
+            'content-desc="Send" bounds="[950,2200][1050,2300]"/>'
+            "</hierarchy>"
+        )
+
     default = {"exit_code": 0, "stdout": "", "stderr": ""}
 
     async def runner(*argv: str, timeout: float = 15.0) -> dict:
@@ -298,8 +303,14 @@ def _whatsapp_adb_runner(responses: dict[str, dict] | None = None):
             if sub == "uiautomator":
                 return dict(responses.get("uiautomator", default))
             if sub == "cat":
-                return {"exit_code": 0, "stdout": ui_xml, "stderr": ""}
-            if sub in ("input", "rm"):
+                return {"exit_code": 0, "stdout": _ui_xml(), "stderr": ""}
+            if sub == "input" and len(argv) > 3 and argv[3] == "text":
+                compose_text["value"] = argv[4].replace("%s", " ")
+                return dict(default)
+            if sub == "input" and len(argv) > 3 and argv[3] in ("tap", "keyevent"):
+                compose_text["value"] = ""
+                return dict(default)
+            if sub == "rm":
                 return dict(default)
         return dict(responses.get(key, default))
 
@@ -334,7 +345,7 @@ def test_whatsapp_send_uses_native_intent_and_auto_taps_send() -> None:
     assert result["phone"] == "917678566378"
     am_calls = [c for c in calls if c and c[0] == "am"]
     assert am_calls
-    assert any("android.intent.action.SEND" in str(a) for a in am_calls[0])
+    assert any("whatsapp://send" in str(a) for a in am_calls[0])
     assert any(c[0] == "adb" for c in calls)
 
 
@@ -357,7 +368,9 @@ def test_whatsapp_send_sanitizes_phone_and_quotes_message() -> None:
     assert any(
         "919876543210" in str(a) for a in am_calls[0]
     )
-    assert any("hi there" in str(a) for a in am_calls[0])
+    assert any(
+        "hi there" in str(a) or "hi%20there" in str(a) for a in am_calls[0]
+    )
 
 
 def test_whatsapp_send_falls_back_to_am_without_termux_open() -> None:
