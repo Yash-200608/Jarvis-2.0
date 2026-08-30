@@ -204,7 +204,14 @@ def build_phone_skills(
             "maps": "com.google.android.apps.maps",
         }
         pkg = PKGS.get(app.lower(), app)
-        # am start works from proot Ubuntu (monkey often does not).
+
+        def _launch_ok(result: dict) -> bool:
+            if result.get("exit_code") == 0:
+                return True
+            combined = (result.get("stdout") or "") + (result.get("stderr") or "")
+            return "Starting: Intent" in combined or "Status: ok" in combined
+
+        # am start works from proot Ubuntu; monkey is often absent there.
         r = await runner(
             "am", "start",
             "-a", "android.intent.action.MAIN",
@@ -212,12 +219,25 @@ def build_phone_skills(
             "-p", pkg,
             timeout=15,
         )
-        if r["exit_code"] != 0:
+        if not _launch_ok(r):
+            resolved = await runner(
+                "cmd", "package", "resolve-activity", "--brief",
+                "-c", "android.intent.category.LAUNCHER", pkg,
+                timeout=10,
+            )
+            lines = [
+                ln.strip()
+                for ln in (resolved.get("stdout") or "").splitlines()
+                if ln.strip() and "/" in ln
+            ]
+            if lines:
+                r = await runner("am", "start", "-n", lines[-1], timeout=15)
+        if not _launch_ok(r) and have("monkey"):
             r = await runner(
                 "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1",
                 timeout=15,
             )
-        return {"ok": r["exit_code"] == 0, "package": pkg, **r}
+        return {"ok": _launch_ok(r), "package": pkg, **r}
 
     async def skill_whatsapp_send(params: dict) -> dict:
         phone = re.sub(r"[^\d+]", "", str(params.get("phone", "")))

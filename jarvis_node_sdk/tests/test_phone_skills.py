@@ -201,9 +201,15 @@ def test_open_app_passes_unknown_name_through_as_package() -> None:
     assert calls[0][0] == "am"
 
 
-def test_open_app_falls_back_to_monkey_when_am_fails() -> None:
+def test_open_app_treats_am_starting_intent_as_success() -> None:
     runner, calls = _fake_runner(
-        {"am": {"exit_code": 1, "stdout": "", "stderr": "fail"}}
+        {
+            "am": {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "Starting: Intent { act=android.intent.action.MAIN pkg=com.android.settings }",
+            }
+        }
     )
     skills = _skills(runner)
 
@@ -211,7 +217,34 @@ def test_open_app_falls_back_to_monkey_when_am_fails() -> None:
 
     assert result["ok"] is True
     assert calls[0][0] == "am"
-    assert calls[1][0] == "monkey"
+    assert len(calls) == 1
+
+
+def test_open_app_resolves_component_when_pkg_launch_fails() -> None:
+    calls: list[tuple] = []
+
+    async def runner(*argv: str, timeout: float = 15.0) -> dict:
+        calls.append(argv)
+        if argv[0] == "am" and len([c for c in calls if c[0] == "am"]) == 1:
+            return {"exit_code": 1, "stdout": "", "stderr": "Error"}
+        if argv[0] == "cmd":
+            return {
+                "exit_code": 0,
+                "stdout": "priority=0\ncom.android.settings/.Settings",
+                "stderr": "",
+            }
+        if argv[0] == "am":
+            return {"exit_code": 0, "stdout": "Starting: Intent", "stderr": ""}
+        return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+    skills = build_phone_skills(runner=runner, have=lambda _: False)
+
+    result = asyncio.run(skills["phone.app.open"]({"app": "settings"}))
+
+    assert result["ok"] is True
+    assert calls[0][0] == "am"
+    assert calls[1][0] == "cmd"
+    assert calls[2] == ("am", "start", "-n", "com.android.settings/.Settings")
 
 
 def test_whatsapp_send_sanitizes_phone_and_quotes_message() -> None:
