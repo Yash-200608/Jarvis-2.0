@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose an embodiment-side change (node skills, bridges, voice, UI, ops).
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        JARVIS owns embodiment. New planners, memory stores, or identity policy belong in Brain.
+        Prefer extending jarvis_node_sdk over adding a fifth island.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing or painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should JARVIS do at the point of action?
+    validations:
+      required: true
+  - type: dropdown
+    id: island
+    attributes:
+      label: Intended island
+      options:
+        - jarvis_node_sdk
+        - legacy HTTP stack
+        - jarvis_prod
+        - jarvis_core
+        - root core/
+        - docs
+        - unsure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Boundary
+      options:
+        - label: This change does not add a new planner, memory authority, or Brain-internal import to JARVIS.
+          required: true

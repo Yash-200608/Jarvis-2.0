@@ -1,71 +1,138 @@
-# JARVIS — Personal AI Assistant
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="JARVIS — Chimera embodiment" width="100%">
+</p>
 
-> *"Just A Rather Very Intelligent System"*
+<p align="center">
+  <strong>Just A Rather Very Intelligent System.</strong><br>
+  The hands, the voice, the mesh. Brain thinks. JARVIS makes the room move.
+</p>
 
-JARVIS is a fully local, voice-activated personal AI assistant that can control your **Windows PC**, **Android phone**, **email**, **WhatsApp**, and **browser** — all through natural language commands, spoken or typed. It is built on top of the [HuggingGPT](https://arxiv.org/abs/2303.17580) framework and powered by **Anthropic Claude** as its reasoning brain.
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.11-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.11">
+  <img src="https://img.shields.io/badge/license-MIT-1aa7b8?style=flat-square" alt="MIT">
+  <img src="https://img.shields.io/badge/daily%20driver-legacy%20ADB-c9a227?style=flat-square" alt="Daily driver legacy">
+  <img src="https://img.shields.io/badge/chimera%20spine-live-128ea0?style=flat-square" alt="Chimera spine live">
+  <img src="https://img.shields.io/badge/wake-Hey%20Jarvis-111111?style=flat-square" alt="Hey Jarvis">
+  <img src="https://img.shields.io/badge/bus-MQTT%20%2B%20Tailscale-0b3a42?style=flat-square" alt="MQTT Tailscale">
+</p>
 
-> **Repo home:** [`Yash-200608/Jarvis-2.0`](https://github.com/Yash-200608/Jarvis-2.0) (private). The previous public repo `Yash-200608/JARVIS` is preserved locally as the `jarvis-old` remote.
+<p align="center">
+  <a href="ARCHITECTURE.md">Architecture</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="SECURITY.md">Security</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href=".env.example">.env.example</a> ·
+  <a href="https://github.com/Yash-200608/Brain">Brain</a>
+</p>
 
----
-
-## Two stacks under one roof
-
-This repo now ships **two parallel runtimes**, and they share the same `awesome_chat.py` brain plus the same `configs/`:
-
-| Stack | Where | Transport | Status | When to use |
-|---|---|---|---|---|
-| **Legacy HTTP-bridge stack** | `hugginggpt/server/` (root) | Flask servers on `:8092` (PC) and `:8091` (phone) | Stable | Single-host development, voice mic on the same box, USB-tethered Android |
-| **Production MQTT stack** | `hugginggpt/server/jarvis_prod/` | aiomqtt QoS-1 over Tailscale | **Draft** (smoke-tested, awaiting first live Tailscale run) | Real-world deployment with phone-anywhere, Telegram gateway, cron jobs, observability |
-
-Pick one. The legacy stack is documented first (most users start there); the `jarvis_prod` stack is documented further down.
-
----
-
-## Table of Contents
-
-1. [What JARVIS Can Do](#what-jarvis-can-do)
-2. [Architecture](#architecture)
-3. [Prerequisites](#prerequisites)
-4. [Installation](#installation)
-5. [Configuration](#configuration)
-6. [Required Environment Variables](#required-environment-variables)
-7. [Running JARVIS — Legacy HTTP Stack](#running-jarvis--legacy-http-stack)
-8. [Running JARVIS — Production MQTT Stack (`jarvis_prod`)](#running-jarvis--production-mqtt-stack-jarvis_prod)
-9. [Available Actions Reference](#available-actions-reference)
-10. [Voice Commands](#voice-commands)
-11. [Android Phone Control](#android-phone-control)
-12. [Email & WhatsApp Setup](#email--whatsapp-setup)
-13. [Switching LLM Backends](#switching-llm-backends)
-14. [Observability — Langfuse SDK v4](#observability--langfuse-sdk-v4)
-15. [Tests](#tests)
-16. [Project Structure](#project-structure)
-17. [Security](#security)
-18. [Troubleshooting](#troubleshooting)
-19. [Contributing](#contributing)
+> **Repo:** [`Yash-200608/Jarvis-2.0`](https://github.com/Yash-200608/Jarvis-2.0) (private). The previous public tree is the local `jarvis-old` remote.
 
 ---
 
-## What JARVIS Can Do
+## One house. Two kinds of truth.
 
-| Category | Examples |
+Say *Hey Jarvis*. A window opens. A text leaves the phone. A node on the Tailscale mesh publishes what it can do.
+
+That is embodiment. **Planning, memory, and permission live in [Brain](https://github.com/Yash-200608/Brain).** This repo is everything that touches silicon.
+
+```mermaid
+flowchart LR
+  You[You] --> Voice[Voice_or_text]
+  Voice --> Jarvis[JARVIS]
+  Jarvis --> Brain[Brain]
+  Brain --> Mqtt[chimera_node_verb]
+  Mqtt --> Pc[PC]
+  Mqtt --> Phone[Phone]
+  Mqtt --> Mcu[Arduino]
+```
+
+| What you feel | Who owns it |
 |---|---|
-| **PC Automation** | Open apps, run commands, take screenshots, type text, click, scroll |
-| **System Control** | Volume, mute, lock, shutdown, restart, process management |
-| **File Management** | Read/write/delete files, search directories, copy/move |
-| **Email** | Send emails, read your inbox (Gmail, Outlook, any IMAP/SMTP) |
-| **WhatsApp** | Send WhatsApp messages to any contact by phone number |
-| **Android Phone** | Send SMS, make calls, open apps, tap/swipe screen, take phone screenshots |
-| **Voice Control** | Wake word "Hey Jarvis" → speak → hear response (no keyboard needed) |
-| **AI Tasks** | Text generation, image captioning, translation, summarization via HuggingFace |
-| **Web** | Open URLs, search the web |
-| **Media** | Play/pause, next/previous track, volume via media keys |
-| **Telegram gateway** *(prod)* | DM JARVIS on Telegram from anywhere; allowlist + pairing; replies route through the same brain |
-| **Cron jobs** *(prod)* | Full crontab via `croniter` (ranges, names, `L`, `#`, lists, steps); SQLite-backed `JobLog` with hot-path counter |
-| **Reflector loop** *(prod)* | pentagi-style fail-streak memory in SQLite; brain self-corrects after repeated failures |
+| Wake word, STT, TTS, chat UI | JARVIS |
+| Click, type, SMS, call, file, volume | JARVIS |
+| Signed presence / command / response | `jarvis_node_sdk` ↔ Brain |
+| Remember, plan, approve risk | **Brain only** |
+
+---
+
+## The islands — no mythology
+
+Five codebases share this folder. They do not share a process.
+
+| Island | Path | Status |
+|---|---|---|
+| **`jarvis_node_sdk`** | `jarvis_node_sdk/` | **Live.** Signed `chimera/<node>/<verb>` spine, tested against Brain. |
+| **Legacy HTTP** | `hugginggpt/server/` | **Daily driver.** Flask + ADB. The one that actually runs your house today. |
+| **jarvis_prod** | `hugginggpt/server/jarvis_prod/` | Draft MQTT, Telegram, cron, Langfuse. Smoke-tested, not the Chimera contract. |
+| **jarvis_core** | `jarvis_core/` | Prototype. Cognition half is retired as authority. |
+| **Root `core/`** | `core/` | Safety kernel. Tested, mostly unwired, known confirmation-order bug. |
+
+New hands go on the node SDK. Not a sixth planner.
+
+---
+
+## What it can do
+
+| Surface | Examples |
+|---|---|
+| **PC** | Apps, type, click, scroll, screenshot, volume, lock, shutdown, files |
+| **Phone** | SMS, call, tap/swipe, apps, screenshots (ADB or Termux) |
+| **Voice** | *Hey Jarvis* → speak → hear it back |
+| **Comms** | Email (IMAP/SMTP), WhatsApp Web, Telegram DM allowlist *(prod)* |
+| **Web / media** | URLs, search, play/pause, transport keys |
+| **Models** | HuggingFace caption / translate / summarize on the legacy path |
+| **Mesh** | Presence, capabilities, signed commands on the Chimera spine |
+| **Ops *(prod)*** | Full crontab via `croniter`, SQLite job log, reflector fail-streaks |
+
+---
+
+## Pick a door
+
+| If you want… | Start here |
+|---|---|
+| It working this afternoon on USB Android | [Legacy HTTP stack](#running-jarvis--legacy-http-stack) |
+| Phone-anywhere MQTT + Telegram + traces | [jarvis_prod](#running-jarvis--production-mqtt-stack-jarvis_prod) *(draft)* |
+| The Chimera contract Brain already speaks | `jarvis_node_sdk/` + [ARCHITECTURE.md](ARCHITECTURE.md) |
+
+Copy [`.env.example`](.env.example). Never put secrets in YAML.
+
+```bash
+git clone https://github.com/Yash-200608/Jarvis-2.0.git
+cd Jarvis-2.0
+python -m venv venv && venv\Scripts\activate
+pip install -r hugginggpt/server/requirements_jarvis.txt
+```
+
+Full install, tokens, and four-terminal launch: [Installation](#installation).
+
+---
+
+## Operator manual
+
+1. [Architecture diagrams](#architecture)
+2. [Prerequisites](#prerequisites)
+3. [Installation](#installation)
+4. [Configuration](#configuration)
+5. [Required Environment Variables](#required-environment-variables)
+6. [Running — Legacy HTTP](#running-jarvis--legacy-http-stack)
+7. [Running — jarvis_prod](#running-jarvis--production-mqtt-stack-jarvis_prod)
+8. [Actions reference](#available-actions-reference)
+9. [Voice](#voice-commands)
+10. [Android](#android-phone-control)
+11. [Email & WhatsApp](#email--whatsapp-setup)
+12. [LLM backends](#switching-llm-backends)
+13. [Langfuse](#observability--langfuse-sdk-v4)
+14. [Tests](#tests)
+15. [Tree](#project-structure)
+16. [Security](#security)
+17. [Troubleshooting](#troubleshooting)
+18. [Contributing](#contributing)
 
 ---
 
 ## Architecture
+
+Island wiring — the daily driver and the draft MQTT stack. The Chimera contract is `jarvis_node_sdk/`, not these diagrams.
 
 ### Legacy HTTP-bridge stack
 
@@ -289,7 +356,9 @@ Use the **same tokens** in the launch scripts.
 
 ## Required Environment Variables
 
-Set these in your shell before launching anything. The repo will not read secrets from YAML.
+A commented template is in [`.env.example`](.env.example). Set these in your
+shell (or a local `.env`) before launching anything. The repo will not read
+secrets from YAML.
 
 ```powershell
 # LLM brains
@@ -743,6 +812,8 @@ def _awesome_chat():
 
 ```
 Jarvis-2.0/
+├── jarvis_node_sdk/                   ← Chimera signed MQTT node (live vs Brain)
+├── docs/assets/banner.svg             ← This README's banner
 ├── hugginggpt/
 │   └── server/
 │       ├── awesome_chat.py            ← Main JARVIS brain (HuggingGPT pipeline)
@@ -794,11 +865,12 @@ Jarvis-2.0/
 
 ## Security
 
-- **No secrets in YAML.** Every credential reference in `config.default.yaml` is a `${VAR}` placeholder. The recursive `_expand_env_vars()` helper resolves them at config-load time.
-- **No `git add .`.** Every staged path in this repo's commits was explicit. Safer than blanket adds — picks up tracked deletes too without sweeping in `.env` / `__pycache__` / venv binaries.
-- **History was rewritten** to purge three live secrets that landed in earlier commits (Gmail App Password, ElevenLabs API key, an upstream GitHub PAT in `easytool/data_toolbench/tool_instruction/toolbench_tool_instruction.json`). The rewrite was via `git filter-repo --replace-text`. Force-pushed to both the new origin and the old `jarvis-old` remote.
-- **Rotate anyway.** The leaked credentials were public for a few hours before the rewrite. Treat them as compromised.
-- **Tree-wide scanner clean** in HEAD: no `gsk_/hf_/sk-ant-/sk-/sk_/ghp_/gho_/4n5mZiaN/225588` matches outside redaction comments.
+Reporting, historical leak notes, and operator rules: **[SECURITY.md](SECURITY.md)**.
+The audited model (including known gaps) is [docs/architecture/SECURITY_MODEL.md](docs/architecture/SECURITY_MODEL.md).
+
+- **No secrets in YAML.** Every credential reference in `config.default.yaml` is a `${VAR}` placeholder.
+- **No `git add .`.** Stage explicit paths so `.env` and venv junk stay out.
+- **Rotate historically leaked keys** (Gmail app password, ElevenLabs, upstream GitHub PAT) even though history was rewritten.
 
 ---
 
@@ -867,38 +939,11 @@ PyAutoGUI is configured to abort if the mouse reaches a corner of the screen (a 
 
 ## Contributing
 
-Pull requests are welcome. For large changes, please open an issue first.
+Setup, island map, tests, and PR rules: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+Architecture and Brain/JARVIS boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-### Development setup
-
-```bash
-git clone https://github.com/Yash-200608/Jarvis-2.0.git
-cd Jarvis-2.0
-python -m venv venv && source venv/bin/activate   # or venv\Scripts\activate on Windows
-pip install -r hugginggpt/server/requirements_jarvis.txt
-```
-
-### Adding a new device action (legacy stack)
-
-1. Open `hugginggpt/server/bridge_server.py`
-2. Add a new `if action == "your_action":` block in the `execute()` function
-3. Follow the existing pattern: validate params → execute → return `jsonify(base)`
-4. Test with `BRIDGE_DRY_RUN=true` first
-
-### Adding a new device action (prod stack)
-
-1. Open `hugginggpt/server/jarvis_prod/agent_phone.py` (or `brain_pc.py` for PC-side actions)
-2. Add the handler in the dispatch table
-3. Update `protocol.py` if you're introducing a new `Command` shape
-4. Run `python _smoke.py` to verify the round-trip
-
-### Reporting issues
-
-Please include:
-- OS version
-- Python version (`python --version`)
-- Full error traceback
-- Which stack (legacy or `jarvis_prod`) and which component (bridge / brain / phone agent)
+For a large change, open an issue first. New Chimera work goes in
+`jarvis_node_sdk/`, not a new planner.
 
 ---
 

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/Yash-200608/Jarvis-2.0/security/advisories/new
+    about: Vulnerabilities, leaked credentials, and bridge/MQTT bypasses — private advisory only.
+  - name: Brain (cognition) issues
+    url: https://github.com/Yash-200608/Brain/issues
+    about: Memory, planning, agents, and identity policy belong in Brain, not here.
+  - name: Architecture docs
+    url: https://github.com/Yash-200608/Jarvis-2.0/blob/main/ARCHITECTURE.md
+    about: Island map and Brain/JARVIS boundary.

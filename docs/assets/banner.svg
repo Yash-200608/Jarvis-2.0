@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">JARVIS</title>
+  <desc id="desc">Chimera embodiment platform  voice, devices, and signed execution</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#05080d"/>
+      <stop offset="50%" stop-color="#071018"/>
+      <stop offset="100%" stop-color="#06141a"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1aa7b8"/>
+      <stop offset="50%" stop-color="#7ef0ff"/>
+      <stop offset="100%" stop-color="#128ea0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="82%" cy="38%" r="42%">
+      <stop offset="0%" stop-color="#7ef0ff" stop-opacity="0.22"/>
+      <stop offset="70%" stop-color="#1aa7b8" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#05080d" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="320" fill="url(#bg)"/>
+  <circle cx="980" cy="130" r="230" fill="url(#glow)"/>
+  <g fill="none" stroke="#7ef0ff" stroke-opacity="0.08" stroke-width="0.8">
+    <path d="M720 20 L1200 20 M720 70 L1200 70 M720 120 L1200 120 M720 170 L1200 170 M720 220 L1200 220 M720 270 L1200 270"/>
+    <path d="M760 0 L760 320 M820 0 L820 320 M880 0 L880 320 M940 0 L940 320 M1000 0 L1000 320 M1060 0 L1060 320 M1120 0 L1120 320 M1180 0 L1180 320"/>
+  </g>
+  <g fill="none" stroke="url(#cyan)" stroke-width="1.3" stroke-linecap="round">
+    <path d="M760 250 L860 160 L980 190 L1080 90" opacity="0.9"/>
+    <path d="M860 160 L900 70" opacity="0.45"/>
+    <path d="M980 190 L1040 250" opacity="0.45"/>
+    <path d="M1080 90 L1140 150" opacity="0.35"/>
+  </g>
+  <g fill="#7ef0ff">
+    <rect x="754" y="244" width="12" height="12" transform="rotate(45 760 250)"/>
+    <circle cx="860" cy="160" r="4.5"/>
+    <circle cx="980" cy="190" r="4.5"/>
+    <circle cx="1080" cy="90" r="5.5"/>
+    <circle cx="900" cy="70" r="2.4" opacity="0.7"/>
+    <circle cx="1040" cy="250" r="2.4" opacity="0.7"/>
+    <circle cx="1140" cy="150" r="2.4" opacity="0.55"/>
+  </g>
+  <text x="56" y="78" fill="#5fd4e0" font-family="Georgia, 'Times New Roman', serif" font-size="13" letter-spacing="6">CHIMERA · EMBODIMENT</text>
+  <text x="52" y="168" fill="#e8f7fa" font-family="Georgia, 'Times New Roman', serif" font-size="86" font-weight="700" letter-spacing="10">JARVIS</text>
+  <text x="56" y="214" fill="#8fb8c0" font-family="Georgia, 'Times New Roman', serif" font-size="20" letter-spacing="1.2">Voice · Hands · Nodes  the body. Brain decides.</text>
+  <rect x="56" y="238" width="72" height="2" fill="url(#cyan)"/>
+</svg>
