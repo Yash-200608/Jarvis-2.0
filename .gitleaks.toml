@@ -17,6 +17,12 @@ paths = [
   # Upstream EasyTool benchmark outputs: recorded third-party API responses
   # (e.g. presigned S3 URLs), not credentials.
   '''^easytool/data_toolbench/''',
+  # Upstream HuggingGPT model catalog (HF model metadata; JWT-shaped and
+  # key-shaped strings are model-card content). Added in upstream 1f90f13.
+  '''^(hugginggpt/)?server/data/p0_models\.jsonl$''',
+  # Upstream TaskBench benchmark prompts ("print_document API with
+  # document: '...'"), flagged by the generic-api-key heuristic.
+  '''^taskbench/data_dailylifeapis/data\.json$''',
   # Vendored JS dependencies (untracked since e357b3e, still in history).
   '''(^|/)node_modules/''',
 ]
