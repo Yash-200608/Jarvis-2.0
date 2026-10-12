@@ -296,6 +296,26 @@ class TestRateLimiter:
         time.sleep(1.1)
         assert limiter.is_allowed("192.168.1.1") == True
 
+    def test_execute_endpoint_returns_429_over_limit(self, monkeypatch):
+        """/execute is throttled (even for bad auth); /health is not."""
+        monkeypatch.setenv("BRIDGE_RATE_LIMIT", "2")
+        client = _phone_bridge().create_app("tok", True).test_client()
+        auth = {"Authorization": "Bearer tok"}
+
+        assert client.post("/execute", json={"action": "x"}, headers=auth).status_code == 200
+        assert client.post("/execute", json={"action": "x"}, headers=auth).status_code == 200
+        assert client.post("/execute", json={"action": "x"}, headers=auth).status_code == 429
+        assert client.post("/execute", json={"action": "x"}).status_code == 429
+        assert client.get("/health").status_code == 200
+
+    def test_rate_limit_zero_disables(self, monkeypatch):
+        """BRIDGE_RATE_LIMIT=0 turns the limiter off."""
+        monkeypatch.setenv("BRIDGE_RATE_LIMIT", "0")
+        client = _phone_bridge().create_app("tok", True).test_client()
+        auth = {"Authorization": "Bearer tok"}
+        for _ in range(10):
+            assert client.post("/execute", json={"action": "x"}, headers=auth).status_code == 200
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  TASK PARSING HELPER TESTS

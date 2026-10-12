@@ -44,6 +44,8 @@ import xml.etree.ElementTree as ET
 
 from flask import Flask, jsonify, request
 
+from bridge_ratelimit import RateLimiter
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 COMMON_APPS = {
@@ -516,8 +518,18 @@ def _send_message_via_app(platform, recipient, message, base):
     return base
 
 
+def _limiter_from_env():
+    """Per-IP limiter for /execute. BRIDGE_RATE_LIMIT=0 disables it."""
+    max_requests = int(os.getenv("BRIDGE_RATE_LIMIT", "60"))
+    if max_requests <= 0:
+        return None
+    return RateLimiter(max_requests=max_requests,
+                       window_seconds=float(os.getenv("BRIDGE_RATE_WINDOW", "60")))
+
+
 def create_app(token, dry_run):
     app = Flask(__name__)
+    limiter = _limiter_from_env()
 
     @app.route("/health", methods=["GET"])
     def health():
@@ -527,6 +539,10 @@ def create_app(token, dry_run):
 
     @app.route("/execute", methods=["POST"])
     def execute():
+        # Rate limit first, so failed-auth attempts are throttled too
+        if limiter and not limiter.is_allowed(request.remote_addr or "unknown"):
+            return jsonify({"ok": False, "error": "Rate limit exceeded"}), 429
+
         # Auth
         auth = request.headers.get("Authorization", "")
         if auth != f"Bearer {token}":

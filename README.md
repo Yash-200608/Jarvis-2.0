@@ -62,7 +62,7 @@ Five codebases share this folder. They do not share a process. Test results belo
 | Island | Status | Entry point | Needs | Test command → result | Last verified |
 |---|---|---|---|---|---|
 | **`jarvis_node_sdk`** | **Live.** Signed `chimera/<node>/<verb>` spine, tested against Brain. | `run_chimera_node.py` · offline: `scripts/smoke_chimera_node.py` | `requirements-chimera-node.txt`. A real node also needs a broker + `CHIMERA_NODE_ID`, `CHIMERA_HMAC_KEY`. | `pytest jarvis_node_sdk/tests -q` → 92 passed (Windows without symlink rights: 91 passed, 1 skipped) | CI, every push |
-| **Legacy HTTP** | **Daily driver, legacy.** Flask + ADB. The one that actually runs the house today. | `hugginggpt/server/run_jarvis.ps1` | `hugginggpt/server/requirements_jarvis.txt`, Windows, ADB, an LLM key, [bridge tokens](#set-your-bridge-tokens) | `pytest test_jarvis.py test_legacy_invocation_log.py -q` (in `hugginggpt/server/`) → 12 passed, 15 skipped, **4 failed** — `TestRateLimiter` targets a rate limiter the bridge never had | 2026-10-12, clean clone |
+| **Legacy HTTP** | **Daily driver, legacy.** Flask + ADB. The one that actually runs the house today. | `hugginggpt/server/run_jarvis.ps1` | `hugginggpt/server/requirements_jarvis.txt`, Windows, ADB, an LLM key, [bridge tokens](#set-your-bridge-tokens) | `pytest test_jarvis.py test_legacy_invocation_log.py -q` (in `hugginggpt/server/`) → 18 passed, 15 skipped (the skips need `diffusers`/LLM deps; none fail) | 2026-10-12, clean clone |
 | **Root `core/`** | Safety kernel. Tested, mostly unwired, known confirmation-order bug. | Library — no entry point | Standard library only | `pytest tests core/tests -q` → 40 passed | 2026-10-12, clean clone |
 | **jarvis_prod** | **Draft.** MQTT, Telegram, cron, Langfuse. Not the Chimera contract. | `hugginggpt/server/jarvis_prod/run_jarvis.ps1` (PC), `start_agent.sh` (phone) | `jarvis_prod/requirements_pc.txt` / `requirements_phone.txt`, MQTT broker | `pytest hugginggpt/server/jarvis_prod/tests -q` → 6 passed | 2026-10-12, clean clone |
 | **jarvis_core** | **Prototype.** Cognition half is retired as authority. | `jarvis_core/run_jarvis_core.py` | `jarvis_core/requirements.txt`, Ollama | None — `jarvis_core/tests/` holds only a conftest | — |
@@ -386,6 +386,8 @@ $env:JARVIS_PHONE_BRIDGE_TOKEN    = python -c "import secrets; print(secrets.tok
 $env:JARVIS_COMPUTER_BRIDGE_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"
 $env:RELAY_TOKEN                  = python -c "import secrets; print(secrets.token_urlsafe(32))"   # -Relay mode only; phone_agent needs the same value
 ```
+
+Both bridges (`phone_bridge.py`, `bridge_server.py`) also throttle `/execute` per source IP, before the token check, so token guessing and runaway loops get `429`. Defaults to 60 requests per 60 s; tune with `BRIDGE_RATE_LIMIT` / `BRIDGE_RATE_WINDOW` (seconds), or set `BRIDGE_RATE_LIMIT=0` to disable. `/health` is never throttled. The limiter lives in `hugginggpt/server/bridge_ratelimit.py`.
 
 ---
 
@@ -830,7 +832,7 @@ python scripts/smoke_chimera_node.py             # PASS 4/4 (offline, no device 
 pytest tests core/tests -q                       # 40 passed
 pytest hugginggpt/server/jarvis_prod/tests -q    # 6 passed
 cd hugginggpt/server && pytest test_jarvis.py test_legacy_invocation_log.py -q
-                                                 # 12 passed, 15 skipped, 4 failed (TestRateLimiter: never implemented)
+                                                 # 18 passed, 15 skipped (skips need diffusers / LLM deps)
 ```
 
 The legacy suite is portable — heavy-dep modules are gated by `pytest.importorskip(...)` so they skip cleanly when `diffusers`, `flask`, or other optional packages aren't installed. The lazy-load helpers look like:
