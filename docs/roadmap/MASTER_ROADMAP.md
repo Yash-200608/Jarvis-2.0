@@ -149,7 +149,7 @@ Target layout (illustrative, not a mandate to move everything in one pass):
 JARVIS/
   CLAUDE.md
   README.md
-  JARVIS_SESSION_CONTEXT.md
+  JARVIS_SESSION_CONTEXT.md      # local-only, gitignored
   docs/                          # NEW — does not exist today
     adr/
       0001-canonical-brain-decision.md

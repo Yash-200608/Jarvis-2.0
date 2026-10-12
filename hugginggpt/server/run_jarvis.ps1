@@ -21,6 +21,9 @@
 # ║    -RelayUrl   wss://host:8093    (RELAY_URL)                            ║
 # ║    -RelayToken <shared-secret>    (RELAY_TOKEN)                          ║
 # ║    -AgentId    ian-phone          (AGENT_ID)                             ║
+# ║                                                                          ║
+# ║  Bridge tokens (env only, never hard-coded):                             ║
+# ║    JARVIS_PHONE_BRIDGE_TOKEN, JARVIS_COMPUTER_BRIDGE_TOKEN               ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 param(
@@ -54,8 +57,15 @@ $env:BRIDGE_DRY_RUN = "false"
 # ── Defaults for relay ───────────────────────────────────────────────────────
 if ($Relay) {
     if (-not $RelayUrl)   { $RelayUrl   = "ws://localhost:8093" }
-    if (-not $RelayToken) { $RelayToken = "***REMOVED***" }
+    if (-not $RelayToken) { throw "[launcher] -Relay needs -RelayToken or `$env:RELAY_TOKEN (shared secret, never hard-coded)." }
     if (-not $AgentId)    { $AgentId    = "ian-phone" }
+}
+
+# ── Bridge tokens (env-only; must match ${...} refs in config.default.yaml) ──
+$PhoneToken    = $env:JARVIS_PHONE_BRIDGE_TOKEN
+$ComputerToken = $env:JARVIS_COMPUTER_BRIDGE_TOKEN
+if (-not $NoBridges -and (-not $PhoneToken -or -not $ComputerToken)) {
+    throw "[launcher] Set `$env:JARVIS_PHONE_BRIDGE_TOKEN and `$env:JARVIS_COMPUTER_BRIDGE_TOKEN (or pass -NoBridges)."
 }
 
 # ── Generic bridge launcher ──────────────────────────────────────────────────
@@ -99,13 +109,13 @@ if (-not $NoBridges) {
             Start-RelayServer $RelayToken 8093
             Start-Sleep -Seconds 1
         }
-        Start-PhoneRelayBridge "***REMOVED***" $RelayUrl $RelayToken $AgentId 8091
-        Start-Bridge "bridge_server"  "bridge_server.py"  "***REMOVED***"    8092
+        Start-PhoneRelayBridge $PhoneToken $RelayUrl $RelayToken $AgentId 8091
+        Start-Bridge "bridge_server"  "bridge_server.py"  $ComputerToken    8092
         Write-Host "[launcher] relay mode: waiting ~4s for phone_agent to connect…" -ForegroundColor DarkGray
         Start-Sleep -Seconds 4
     } else {
-        Start-Bridge "phone_bridge"   "phone_bridge.py"   "***REMOVED***" 8091
-        Start-Bridge "bridge_server"  "bridge_server.py"  "***REMOVED***"    8092
+        Start-Bridge "phone_bridge"   "phone_bridge.py"   $PhoneToken 8091
+        Start-Bridge "bridge_server"  "bridge_server.py"  $ComputerToken    8092
         Write-Host "[launcher] giving bridges ~3s to warm up…" -ForegroundColor DarkGray
         Start-Sleep -Seconds 3
     }

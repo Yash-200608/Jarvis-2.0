@@ -57,17 +57,17 @@ integrations:
     #           (works from anywhere on the internet, behind NATs, different WiFi)
     mode: usb                           # usb | relay
     base_url: http://localhost:8091
-    token: ***REMOVED***
+    token: ${JARVIS_PHONE_BRIDGE_TOKEN}
     # Settings used when mode = relay
     relay:
       url: ws://localhost:8093          # use wss://your-host:8093 for internet
-      token: ***REMOVED***
+      token: ${RELAY_TOKEN}
       agent_id: ian-phone
       req_timeout: 45                   # seconds to wait for agent reply
   computer:
     enabled: true                         # start bridge_server.py on port 8092 first
     base_url: http://localhost:8092
-    token: ***REMOVED***
+    token: ${JARVIS_COMPUTER_BRIDGE_TOKEN}
 
 # ── Email (used by bridge_server.py send_email / read_emails) ─────────────────
 email:

@@ -17,7 +17,7 @@ USAGE
         --relay-url wss://your-relay-host:8093 \
         --relay-token <shared-secret> \
         --agent-id ian-pixel-001 \
-        --http-token ***REMOVED***
+        --http-token <shared-secret>
 
 EnvVars override: PHONE_HTTP_TOKEN, RELAY_URL, RELAY_TOKEN, AGENT_ID,
                   RELAY_REQ_TIMEOUT (seconds, default 45)

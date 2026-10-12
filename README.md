@@ -25,7 +25,7 @@
   <a href="https://github.com/Yash-200608/Brain">Brain</a>
 </p>
 
-> **Repo:** [`Yash-200608/Jarvis-2.0`](https://github.com/Yash-200608/Jarvis-2.0) (private). The previous public tree is the local `jarvis-old` remote.
+> **Repo:** [`Yash-200608/Jarvis-2.0`](https://github.com/Yash-200608/Jarvis-2.0) (public).
 
 ---
 
@@ -336,21 +336,25 @@ elevenlabs:
 
 ### Set your bridge tokens
 
-These are secret strings you choose — they authenticate the bridge servers. Any random string works.
+These are secret strings you choose — they authenticate the bridge servers. Like every other secret, they come from the environment:
 
 ```yaml
 integrations:
-  computer:
-    enabled: true
-    base_url: http://localhost:8092
-    token: my-computer-secret-token
   phone:
-    enabled: true                 # set false if you don't have an Android device
-    base_url: http://localhost:8091
-    token: my-phone-secret-token
+    token: ${JARVIS_PHONE_BRIDGE_TOKEN}
+    relay:
+      token: ${RELAY_TOKEN}
+  computer:
+    token: ${JARVIS_COMPUTER_BRIDGE_TOKEN}
 ```
 
-Use the **same tokens** in the launch scripts.
+Generate them once and export them in the shell that runs `run_jarvis.ps1` — the launcher hands the same values to the bridge processes and refuses to start bridges if either is unset:
+
+```powershell
+$env:JARVIS_PHONE_BRIDGE_TOKEN    = python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:JARVIS_COMPUTER_BRIDGE_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:RELAY_TOKEN                  = python -c "import secrets; print(secrets.token_urlsafe(32))"   # -Relay mode only; phone_agent needs the same value
+```
 
 ---
 
@@ -915,7 +919,8 @@ pipwin install pyaudio
 - Make sure the `anthropic:` section in YAML references `${ANTHROPIC_API_KEY}` (or whatever var you exported)
 
 ### Bridge server returns `{"ok": false, "error": "Unauthorized"}`
-- The `BRIDGE_TOKEN` in your `.ps1` script must **exactly** match the `token:` in `config.default.yaml`
+- `JARVIS_PHONE_BRIDGE_TOKEN` / `JARVIS_COMPUTER_BRIDGE_TOKEN` must be set in the **same shell** that runs `run_jarvis.ps1`, so the bridges and `config.default.yaml` resolve the same values
+- If you start a bridge by hand, its `BRIDGE_TOKEN` must **exactly** match the corresponding env var
 
 ### `${VAR}` shows up literal in logs / SMTP-AUTH fails
 - The shell that launched the server didn't have the env var exported
