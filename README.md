@@ -61,7 +61,7 @@ Five codebases share this folder. They do not share a process. Test results belo
 
 | Island | Status | Entry point | Needs | Test command → result | Last verified |
 |---|---|---|---|---|---|
-| **`jarvis_node_sdk`** | **Live.** Signed `chimera/<node>/<verb>` spine, tested against Brain. | `run_chimera_node.py` · offline: `scripts/smoke_chimera_node.py` | `requirements-chimera-node.txt`. A real node also needs a broker + `CHIMERA_NODE_ID`, `CHIMERA_HMAC_KEY`. | `pytest jarvis_node_sdk/tests -q` → 91 passed, 1 skipped | CI, every push |
+| **`jarvis_node_sdk`** | **Live.** Signed `chimera/<node>/<verb>` spine, tested against Brain. | `run_chimera_node.py` · offline: `scripts/smoke_chimera_node.py` | `requirements-chimera-node.txt`. A real node also needs a broker + `CHIMERA_NODE_ID`, `CHIMERA_HMAC_KEY`. | `pytest jarvis_node_sdk/tests -q` → 92 passed (Windows without symlink rights: 91 passed, 1 skipped) | CI, every push |
 | **Legacy HTTP** | **Daily driver, legacy.** Flask + ADB. The one that actually runs the house today. | `hugginggpt/server/run_jarvis.ps1` | `hugginggpt/server/requirements_jarvis.txt`, Windows, ADB, an LLM key, [bridge tokens](#set-your-bridge-tokens) | `pytest test_jarvis.py test_legacy_invocation_log.py -q` (in `hugginggpt/server/`) → 12 passed, 15 skipped, **4 failed** — `TestRateLimiter` targets a rate limiter the bridge never had | 2026-10-12, clean clone |
 | **Root `core/`** | Safety kernel. Tested, mostly unwired, known confirmation-order bug. | Library — no entry point | Standard library only | `pytest tests core/tests -q` → 40 passed | 2026-10-12, clean clone |
 | **jarvis_prod** | **Draft.** MQTT, Telegram, cron, Langfuse. Not the Chimera contract. | `hugginggpt/server/jarvis_prod/run_jarvis.ps1` (PC), `start_agent.sh` (phone) | `jarvis_prod/requirements_pc.txt` / `requirements_phone.txt`, MQTT broker | `pytest hugginggpt/server/jarvis_prod/tests -q` → 6 passed | 2026-10-12, clean clone |
@@ -112,7 +112,7 @@ Chimera node smoke (offline: no broker, no device actions)
   [ ok ] tampered envelope  -> dropped, no reply
 PASS 4/4
 ...
-91 passed, 1 skipped
+92 passed        # Windows without symlink rights: 91 passed, 1 skipped
 ```
 
 CI runs both commands on every push. Next step up is a real node: `run_chimera_node.py` with a broker and `CHIMERA_NODE_ID` / `CHIMERA_HMAC_KEY` set (see its docstring).
@@ -825,7 +825,7 @@ Plus 60s/10s timeouts and a `try/except requests.RequestException` so transient 
 One suite per island, run from the repo root. Results from a clean clone on 2026-10-12 (Python 3.12); CI runs the first two lines plus a gitleaks secret scan on every push.
 
 ```bash
-pytest jarvis_node_sdk/tests -q                  # 91 passed, 1 skipped
+pytest jarvis_node_sdk/tests -q                  # 92 passed (91 + 1 symlink skip on Windows)
 python scripts/smoke_chimera_node.py             # PASS 4/4 (offline, no device actions)
 pytest tests core/tests -q                       # 40 passed
 pytest hugginggpt/server/jarvis_prod/tests -q    # 6 passed
