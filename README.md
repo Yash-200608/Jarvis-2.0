@@ -57,15 +57,15 @@ flowchart LR
 
 ## The islands — no mythology
 
-Five codebases share this folder. They do not share a process.
+Five codebases share this folder. They do not share a process. Test results below are from a clean clone, not from memory.
 
-| Island | Path | Status |
-|---|---|---|
-| **`jarvis_node_sdk`** | `jarvis_node_sdk/` | **Live.** Signed `chimera/<node>/<verb>` spine, tested against Brain. |
-| **Legacy HTTP** | `hugginggpt/server/` | **Daily driver.** Flask + ADB. The one that actually runs your house today. |
-| **jarvis_prod** | `hugginggpt/server/jarvis_prod/` | Draft MQTT, Telegram, cron, Langfuse. Smoke-tested, not the Chimera contract. |
-| **jarvis_core** | `jarvis_core/` | Prototype. Cognition half is retired as authority. |
-| **Root `core/`** | `core/` | Safety kernel. Tested, mostly unwired, known confirmation-order bug. |
+| Island | Status | Entry point | Needs | Test command → result | Last verified |
+|---|---|---|---|---|---|
+| **`jarvis_node_sdk`** | **Live.** Signed `chimera/<node>/<verb>` spine, tested against Brain. | `run_chimera_node.py` · offline: `scripts/smoke_chimera_node.py` | `requirements-chimera-node.txt`. A real node also needs a broker + `CHIMERA_NODE_ID`, `CHIMERA_HMAC_KEY`. | `pytest jarvis_node_sdk/tests -q` → 91 passed, 1 skipped | CI, every push |
+| **Legacy HTTP** | **Daily driver, legacy.** Flask + ADB. The one that actually runs the house today. | `hugginggpt/server/run_jarvis.ps1` | `hugginggpt/server/requirements_jarvis.txt`, Windows, ADB, an LLM key, [bridge tokens](#set-your-bridge-tokens) | `pytest test_jarvis.py test_legacy_invocation_log.py -q` (in `hugginggpt/server/`) → 12 passed, 15 skipped, **4 failed** — `TestRateLimiter` targets a rate limiter the bridge never had | 2026-10-12, clean clone |
+| **Root `core/`** | Safety kernel. Tested, mostly unwired, known confirmation-order bug. | Library — no entry point | Standard library only | `pytest tests core/tests -q` → 40 passed | 2026-10-12, clean clone |
+| **jarvis_prod** | **Draft.** MQTT, Telegram, cron, Langfuse. Not the Chimera contract. | `hugginggpt/server/jarvis_prod/run_jarvis.ps1` (PC), `start_agent.sh` (phone) | `jarvis_prod/requirements_pc.txt` / `requirements_phone.txt`, MQTT broker | `pytest hugginggpt/server/jarvis_prod/tests -q` → 6 passed | 2026-10-12, clean clone |
+| **jarvis_core** | **Prototype.** Cognition half is retired as authority. | `jarvis_core/run_jarvis_core.py` | `jarvis_core/requirements.txt`, Ollama | None — `jarvis_core/tests/` holds only a conftest | — |
 
 New hands go on the node SDK. Not a sixth planner.
 
@@ -88,13 +88,44 @@ New hands go on the node SDK. Not a sixth planner.
 
 ## Pick a door
 
+### Recommended demo — two minutes, no hardware
+
+The one path to try first. It drives the node's real signed command path with a throwaway key: no broker, no phone, no device actions, no environment variables. Python 3.11+.
+
+```bash
+git clone https://github.com/Yash-200608/Jarvis-2.0.git
+cd Jarvis-2.0
+python -m venv .venv
+.venv\Scripts\activate                      # macOS/Linux: source .venv/bin/activate
+pip install -r requirements-chimera-node.txt pytest
+python scripts/smoke_chimera_node.py
+pytest jarvis_node_sdk/tests -q
+```
+
+Expected:
+
+```text
+Chimera node smoke (offline: no broker, no device actions)
+  [ ok ] signed ping        -> {'pong': True}  (signed reply, request_id echoed)
+  [ ok ] unknown action     -> {'error': 'unknown_action'}
+  [ ok ] forged signature   -> dropped, no reply
+  [ ok ] tampered envelope  -> dropped, no reply
+PASS 4/4
+...
+91 passed, 1 skipped
+```
+
+CI runs both commands on every push. Next step up is a real node: `run_chimera_node.py` with a broker and `CHIMERA_NODE_ID` / `CHIMERA_HMAC_KEY` set (see its docstring).
+
+### Everything else
+
 | If you want… | Start here |
 |---|---|
 | It working this afternoon on USB Android | [Legacy HTTP stack](#running-jarvis--legacy-http-stack) |
 | Phone-anywhere MQTT + Telegram + traces | [jarvis_prod](#running-jarvis--production-mqtt-stack-jarvis_prod) *(draft)* |
 | The Chimera contract Brain already speaks | `jarvis_node_sdk/` + [ARCHITECTURE.md](ARCHITECTURE.md) |
 
-Copy [`.env.example`](.env.example). Never put secrets in YAML.
+For the hardware stacks, copy [`.env.example`](.env.example). Never put secrets in YAML. Legacy daily-driver install:
 
 ```bash
 git clone https://github.com/Yash-200608/Jarvis-2.0.git
@@ -791,16 +822,18 @@ Plus 60s/10s timeouts and a `try/except requests.RequestException` so transient 
 
 ## Tests
 
-The test suite is portable — heavy-dep modules are gated by `pytest.importorskip(...)` so they skip cleanly when `diffusers`, `flask`, or other optional packages aren't installed.
+One suite per island, run from the repo root. Results from a clean clone on 2026-10-12 (Python 3.12); CI runs the first two lines plus a gitleaks secret scan on every push.
 
 ```bash
-cd hugginggpt/server
-pytest test_jarvis.py -v
+pytest jarvis_node_sdk/tests -q                  # 91 passed, 1 skipped
+python scripts/smoke_chimera_node.py             # PASS 4/4 (offline, no device actions)
+pytest tests core/tests -q                       # 40 passed
+pytest hugginggpt/server/jarvis_prod/tests -q    # 6 passed
+cd hugginggpt/server && pytest test_jarvis.py test_legacy_invocation_log.py -q
+                                                 # 12 passed, 15 skipped, 4 failed (TestRateLimiter: never implemented)
 ```
 
-**On bare Python 3.12 with no optional deps:** **10 passed, 19 skipped, 0 errored.**
-
-The lazy-load helpers look like:
+The legacy suite is portable — heavy-dep modules are gated by `pytest.importorskip(...)` so they skip cleanly when `diffusers`, `flask`, or other optional packages aren't installed. The lazy-load helpers look like:
 
 ```python
 def _awesome_chat():

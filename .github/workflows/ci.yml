@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:  # manual run = full-history secret scan
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -20,3 +24,18 @@ jobs:
           pip install pytest
       - name: jarvis_node_sdk tests
         run: pytest jarvis_node_sdk/tests -q
+      - name: Offline node smoke (README demo path)
+        run: python scripts/smoke_chimera_node.py
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # push / pull_request scan the new commits; workflow_dispatch scans all history.
+      # Allowlist for inherited upstream history: .gitleaks.toml
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false

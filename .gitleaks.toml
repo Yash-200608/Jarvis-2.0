@@ -1,0 +1,22 @@
+# gitleaks config -- default ruleset plus a narrow allowlist for history this
+# project inherited from upstream microsoft/JARVIS (HuggingGPT / EasyTool).
+# Nothing listed here is a credential belonging to this project. Anything NEW
+# that gitleaks flags must be fixed (and rotated), not added here.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Inherited upstream history and vendored third-party code"
+commits = [
+  # Upstream HuggingGPT (2023-04-06): demo HF token in server/huggingface.py,
+  # removed upstream two days later in 4927d07. Not ours to rotate.
+  "8915c5fad6c3d0690503af72b7231eae9d9290ad",
+]
+paths = [
+  # Upstream EasyTool benchmark outputs: recorded third-party API responses
+  # (e.g. presigned S3 URLs), not credentials.
+  '''^easytool/data_toolbench/''',
+  # Vendored JS dependencies (untracked since e357b3e, still in history).
+  '''(^|/)node_modules/''',
+]
