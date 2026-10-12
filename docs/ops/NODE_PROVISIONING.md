@@ -129,9 +129,8 @@ pip install pydantic-core==2.46.3 \
 pip install pydantic aiomqtt paho-mqtt loguru python-dotenv
 ```
 
-**Auto-restart:** `pkg install termux-services`, then create
-`~/.config/sv/chimera-node/run` execing the command above, and
-`sv-enable chimera-node`.
+**Auto-restart:** use the proot path below (§4b) and its service installer;
+termux-services reads `$PREFIX/var/service`, not `~/.config/sv`.
 
 ### 4b. proot Ubuntu (recommended when Termux is Python 3.14)
 
@@ -160,8 +159,20 @@ bash ~/Jarvis-2.0/scripts/run_chimera_proot.sh
 `/data/data/com.termux/files/usr/bin` on `PATH` inside proot so
 `termux-battery-status` and friends still work.
 
-**Auto-restart:** point a termux-services `run` script at
-`run_chimera_proot.sh` instead of `run_chimera_node.py`.
+**Auto-restart (termux-services):**
+
+```sh
+bash ~/Jarvis-2.0/scripts/termux_service_install.sh   # --uninstall to remove
+# restart Termux once so runsvdir starts, then:
+sv status chimera-node        # sv down / sv up to stop / start
+tail -f $PREFIX/var/log/sv/chimera-node/current
+```
+
+The service holds a wake lock (`termux-wake-lock`) so Doze does not freeze
+the node, and restarts it if it exits. Don't also start
+`run_chimera_proot.sh` by hand — two nodes with one `CHIMERA_NODE_ID` fight
+over the MQTT client id. *Status: written 2026-10-12, syntax-checked only;
+not yet exercised on the phone (it was offline).*
 
 **Stop the PC sim first:** if `nothing-phone-3a` is already running on the
 PC (sim env file), kill that process before starting the real phone node —

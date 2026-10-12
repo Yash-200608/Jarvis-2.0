@@ -1,0 +1,2 @@
+# Shell scripts run on Termux/Linux; CRLF breaks them (set -eu).
+*.sh text eol=lf
